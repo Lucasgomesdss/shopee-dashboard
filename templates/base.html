@@ -13,7 +13,7 @@
       <a href="{{ url_for('scan') }}">Escanear</a>
       <a href="{{ url_for('pending_tab') }}">Pendências</a>
       <a href="{{ url_for('completed_tab') }}">Concluídos</a>
-      {% if employee_name %}<span style="opacity:.85">| {{ employee_name }}</span>{% endif %}
+      {% if employee_name %}<span style="opacity:.85">| {{ employee_name }}</span> <a href="{{ url_for('logout') }}">Sair</a>{% endif %}
     </nav>
   </header>
   <main>
