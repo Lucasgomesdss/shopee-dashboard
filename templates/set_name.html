@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Identifique-se</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main style="max-width:400px;margin:60px auto;padding:0 16px;">
+    <div class="card">
+      <h2>📦 Separação de Pedidos</h2>
+      <p class="muted">Digite seu nome para começar. Isso é usado só para registrar quem separou cada pedido.</p>
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}{% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}{% endif %}
+      {% endwith %}
+      <form method="post">
+        <input type="text" name="employee_name" placeholder="Seu nome" autofocus required>
+        <button type="submit" class="btn-primary">Entrar</button>
+      </form>
+    </div>
+  </main>
+</body>
+</html>
