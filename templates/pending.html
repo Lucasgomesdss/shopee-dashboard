@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Pendências{% endblock %}
+{% block content %}
+  <h2>Pedidos com pendência</h2>
+  {% if not orders %}
+    <p class="muted">Nenhuma pendência no momento 🎉</p>
+  {% endif %}
+  {% for order in orders %}
+    <div class="card">
+      <h3>{{ order.order_sn }} <span class="tag pending">pendente</span></h3>
+      <p class="muted">Rastreio: {{ order.tracking_number }} — por {{ order.employee_name or "?" }}</p>
+      <p><strong>Motivo:</strong> {{ order.pending_reason }}</p>
+      <table>
+        <thead><tr><th>Produto</th><th>Variação</th><th>Qtd</th></tr></thead>
+        <tbody>
+        {% for item in order.items_json | fromjson %}
+          <tr><td>{{ item.name }}</td><td>{{ item.variation }}</td><td>{{ item.quantity }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <div class="row">
+        <form class="inline" method="post" action="{{ url_for('reopen_order', order_sn=order.order_sn) }}">
+          <button type="submit" class="btn-outline">↩️ Voltar para fila de separação</button>
+        </form>
+      </div>
+    </div>
+  {% endfor %}
+{% endblock %}
