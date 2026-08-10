@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Concluídos{% endblock %}
+{% block content %}
+  <h2>Pedidos concluídos</h2>
+  {% if not orders %}
+    <p class="muted">Nenhum pedido concluído ainda.</p>
+  {% endif %}
+  <table>
+    <thead><tr><th>Pedido</th><th>Rastreio</th><th>Colaborador</th><th>Concluído em</th></tr></thead>
+    <tbody>
+    {% for order in orders %}
+      <tr>
+        <td>{{ order.order_sn }} <span class="tag completed">ok</span></td>
+        <td>{{ order.tracking_number }}</td>
+        <td>{{ order.employee_name }}</td>
+        <td>{{ order.confirmed_at[:16].replace("T", " ") }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}
