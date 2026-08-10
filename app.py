@@ -21,6 +21,11 @@ USE_MOCK_DATA = os.environ.get("USE_MOCK_DATA", "true").lower() == "true"
 
 models.init_db()
 
+if USE_MOCK_DATA:
+    # Roda também quando o servidor é iniciado pelo gunicorn (produção), não só localmente.
+    import seed_mock
+    seed_mock.run()
+
 
 def get_shopee_client():
     """Monta um ShopeeClient com o access_token válido mais recente, renovando
@@ -224,7 +229,4 @@ def picking_list_pdf():
 
 
 if __name__ == "__main__":
-    if USE_MOCK_DATA:
-        import seed_mock
-        seed_mock.run()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
