@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Escanear pedido{% endblock %}
+{% block content %}
+  <div class="card">
+    <h3>Escanear código de rastreio</h3>
+    <form method="post">
+      <input type="search" name="tracking_number" placeholder="Bipe ou digite o código da etiqueta" autofocus required>
+      <button type="submit" class="btn-primary">Buscar pedido</button>
+    </form>
+  </div>
+
+  {% if order %}
+    <div class="card">
+      <h3>Pedido {{ order.order_sn }}</h3>
+      <p class="muted">Rastreio: {{ order.tracking_number }}</p>
+      <table>
+        <thead><tr><th>Produto</th><th>Variação</th><th>Qtd</th></tr></thead>
+        <tbody>
+        {% for item in order.items_json | fromjson %}
+          <tr>
+            <td>{{ item.name }}</td>
+            <td>{{ item.variation }}</td>
+            <td>{{ item.quantity }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+
+      <div class="row">
+        <form class="inline" method="post" action="{{ url_for('complete_order', order_sn=order.order_sn) }}">
+          <button type="submit" class="btn-ok">✅ Separado, dar OK</button>
+        </form>
+      </div>
+
+      <details style="margin-top:16px;">
+        <summary class="muted" style="cursor:pointer;">Tem algum problema com esse pedido?</summary>
+        <form method="post" action="{{ url_for('pending_order', order_sn=order.order_sn) }}" style="margin-top:10px;">
+          <input type="text" name="reason" placeholder="Descreva o problema (ex: falta item, item avariado)" required>
+          <button type="submit" class="btn-warn">⚠️ Marcar pendência</button>
+        </form>
+      </details>
+    </div>
+  {% endif %}
+{% endblock %}
