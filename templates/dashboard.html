@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+  {% if mock_mode %}
+    <div class="flash">Modo demonstração ativo — usando pedidos de exemplo. Configure as credenciais da Shopee no .env para dados reais.</div>
+  {% elif not credentials_configured %}
+    <div class="flash">Credenciais da Shopee (Partner ID/Key) ainda não configuradas no .env.</div>
+  {% elif shopee_connected %}
+    <div class="card" style="border-left:4px solid var(--ok);">
+      ✅ Loja <strong>{{ shopee_shop_id }}</strong> conectada à Shopee.
+    </div>
+  {% else %}
+    <div class="flash">
+      Credenciais configuradas, mas nenhuma loja autorizada ainda. Vá no Console da
+      Shopee Open Platform → seu App → botão <strong>Authorize</strong> para conectar
+      sua loja (a Shopee vai te redirecionar de volta pra cá automaticamente).
+    </div>
+  {% endif %}
+
+  <div class="stats">
+    <div class="stat to_separate">
+      <div class="n">{{ counts.to_separate }}</div>
+      <div class="label">A separar</div>
+    </div>
+    <div class="stat pending">
+      <div class="n">{{ counts.pending }}</div>
+      <div class="label">Pendências</div>
+    </div>
+    <div class="stat completed">
+      <div class="n">{{ counts.completed }}</div>
+      <div class="label">Concluídos</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Escanear pedido</h3>
+    <p class="muted">Bipe ou digite o código de rastreio da etiqueta para ver o que precisa ser separado.</p>
+    <a class="btn btn-primary" href="{{ url_for('scan') }}">Ir para escaneamento →</a>
+  </div>
+
+  <div class="card">
+    <h3>Sincronizar com a Shopee</h3>
+    <p class="muted">Busca os pedidos prontos para envio direto da sua loja Shopee.</p>
+    <form method="post" action="{{ url_for('sync') }}">
+      <button type="submit" class="btn-outline">🔄 Sincronizar pedidos</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h3>Pré-separação</h3>
+    <p class="muted">Gera um PDF com a quantidade total de cada produto/variação dos pedidos ainda em aberto.</p>
+    <a class="btn btn-outline" href="{{ url_for('picking_list_pdf') }}">⬇️ Baixar PDF de pré-separação</a>
+  </div>
+{% endblock %}
