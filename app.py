@@ -19,6 +19,11 @@ PARTNER_ID = os.environ.get("SHOPEE_PARTNER_ID")
 PARTNER_KEY = os.environ.get("SHOPEE_PARTNER_KEY")
 USE_MOCK_DATA = os.environ.get("USE_MOCK_DATA", "true").lower() == "true"
 
+# Login dos colaboradores: usuário fixo (SEPARADOR 1/2/3) + senha única, guardada
+# só como variável de ambiente no Render (nunca no código).
+SEPARADOR_USERS = ["SEPARADOR 1", "SEPARADOR 2", "SEPARADOR 3"]
+SEPARADOR_PASSWORD = os.environ.get("SEPARADOR_PASSWORD", "")
+
 models.init_db()
 
 if USE_MOCK_DATA:
@@ -62,7 +67,7 @@ def inject_employee_name():
 
 @app.before_request
 def ensure_employee_name():
-    if request.endpoint in ("set_name", "static", "shopee_callback"):
+    if request.endpoint in ("set_name", "logout", "static", "shopee_callback"):
         return
     if not get_employee_name():
         return redirect(url_for("set_name", next=request.path))
@@ -71,12 +76,23 @@ def ensure_employee_name():
 @app.route("/nome", methods=["GET", "POST"])
 def set_name():
     if request.method == "POST":
-        name = request.form.get("employee_name", "").strip()
-        if name:
-            session["employee_name"] = name
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        if (
+            SEPARADOR_PASSWORD
+            and username in SEPARADOR_USERS
+            and password == SEPARADOR_PASSWORD
+        ):
+            session["employee_name"] = username
             return redirect(request.args.get("next") or url_for("dashboard"))
-        flash("Digite seu nome para continuar.")
-    return render_template("set_name.html")
+        flash("Usuário ou senha inválidos.")
+    return render_template("set_name.html", users=SEPARADOR_USERS)
+
+
+@app.route("/sair")
+def logout():
+    session.pop("employee_name", None)
+    return redirect(url_for("set_name"))
 
 
 @app.route("/")
