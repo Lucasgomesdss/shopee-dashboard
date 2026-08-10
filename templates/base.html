@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Separação de Pedidos{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <a class="brand" href="{{ url_for('dashboard') }}">📦 Separação de Pedidos</a>
+    <nav>
+      <a href="{{ url_for('scan') }}">Escanear</a>
+      <a href="{{ url_for('pending_tab') }}">Pendências</a>
+      <a href="{{ url_for('completed_tab') }}">Concluídos</a>
+      {% if employee_name %}<span style="opacity:.85">| {{ employee_name }}</span>{% endif %}
+    </nav>
+  </header>
+  <main>
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        {% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
