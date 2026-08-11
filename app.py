@@ -159,7 +159,7 @@ def sync():
         return redirect(url_for("dashboard"))
 
     now = int(time.time())
-    lookback_days = 90
+    lookback_days = 3
     window_days = 15  # limite máximo da Shopee por chamada
     max_pages_per_window = 30  # trava de segurança: até 1500 pedidos por janela/status
     order_statuses = ["READY_TO_SHIP", "PROCESSED"]
