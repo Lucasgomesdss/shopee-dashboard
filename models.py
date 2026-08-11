@@ -16,7 +16,7 @@ import time
 from datetime import datetime
 from contextlib import contextmanager
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "dashboard.db")
+DB_PATH = "/var/data/dashboard.db" if os.path.isdir("/var/data") else os.path.join(os.path.dirname(__file__), "dashboard.db")
 
 STATUS_TO_SEPARATE = "to_separate"   # ainda não foi escaneado/separado
 STATUS_PENDING = "pending"           # separação com problema (item faltando, etc.)
