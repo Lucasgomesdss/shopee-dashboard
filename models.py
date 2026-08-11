@@ -186,3 +186,25 @@ def open_orders_items():
         for r in rows:
             all_items.extend(json.loads(r["items_json"]))
         return all_items
+
+
+def list_open_order_sns():
+    """order_sn de pedidos ainda nao concluidos (to_separate + pending), usado no /sync
+    para descobrir quais pedidos locais podem ja ter sido despachados na Shopee."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT order_sn FROM orders WHERE status IN (?, ?)",
+            (STATUS_TO_SEPARATE, STATUS_PENDING),
+        ).fetchall()
+        return [r["order_sn"] for r in rows]
+
+def mark_auto_completed(order_sn: str):
+    """Marca um pedido como concluido automaticamente: saiu de READY_TO_SHIP/PROCESSED na Shopee
+    (ja foi coletado pela transportadora) mas o time esqueceu de confirmar manualmente."""
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE orders SET status = ?, employee_name = ?, confirmed_at = ?,
+            pending_reason = NULL, updated_at = ? WHERE order_sn = ?""",
+            (STATUS_COMPLETED, "Auto (Shopee)", now, now, order_sn),
+        )
