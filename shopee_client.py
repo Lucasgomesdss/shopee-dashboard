@@ -35,6 +35,7 @@ class ShopeeClient:
         self.shop_id = int(shop_id) if shop_id else None
         self.access_token = access_token
         self.host = host
+        self.session = requests.Session()  # reaproveita a conexão SSL entre chamadas (evita handshake novo a cada request)
 
     def _sign(self, path: str, timestamp: int, extra: str = ""):
         base_string = f"{self.partner_id}{path}{timestamp}{extra}"
@@ -61,7 +62,7 @@ class ShopeeClient:
         sign = self._sign(path, timestamp)
         url = f"{self.host}{path}?partner_id={self.partner_id}&timestamp={timestamp}&sign={sign}"
         body = {"code": code, "shop_id": int(shop_id), "partner_id": self.partner_id}
-        resp = requests.post(url, json=body, timeout=15)
+        resp = self.session.post(url, json=body, timeout=15)
         resp.raise_for_status()
         return resp.json()
 
@@ -77,7 +78,7 @@ class ShopeeClient:
             "shop_id": int(shop_id),
             "partner_id": self.partner_id,
         }
-        resp = requests.post(url, json=body, timeout=15)
+        resp = self.session.post(url, json=body, timeout=15)
         resp.raise_for_status()
         return resp.json()
 
@@ -96,9 +97,9 @@ class ShopeeClient:
             query.update(params)
         url = f"{self.host}{path}"
         if method == "GET":
-            resp = requests.get(url, params=query, timeout=20)
+            resp = self.session.get(url, params=query, timeout=20)
         else:
-            resp = requests.post(url, params=query, json=json_body or {}, timeout=20)
+            resp = self.session.post(url, params=query, json=json_body or {}, timeout=20)
         resp.raise_for_status()
         return resp.json()
 
