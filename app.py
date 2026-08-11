@@ -165,6 +165,7 @@ def sync():
     order_statuses = ["READY_TO_SHIP", "PROCESSED"]
 
     imported = 0
+    seen_sns = set()  # todo order_sn visto em READY_TO_SHIP/PROCESSED nesta sincronização
     oldest = now - lookback_days * 24 * 3600
     for status in order_statuses:
         window_end = now
@@ -183,6 +184,7 @@ def sync():
                 response = resp.get("response", {})
                 order_list = response.get("order_list", [])
                 order_sns = [o["order_sn"] for o in order_list]
+                seen_sns.update(order_sns)
                 if order_sns:
                     details = client.get_order_detail(order_sns).get("response", {}).get("order_list", [])
                     for od in details:
@@ -223,9 +225,33 @@ def sync():
     return redirect(url_for("dashboard"))
 
 
+   # Limpeza automática: pedidos que ainda estão na fila local (a separar/pendente)
+    # mas que não apareceram em READY_TO_SHIP/PROCESSED nesta sincronização podem já
+    # ter sido despachados. Confirma direto na Shopee antes de mexer em qualquer coisa,
+    # pra não marcar como concluído por engano (ex: pedido antigo fora da janela de 3 dias).
+    auto_completed = 0
+    local_open = [sn for sn in models.list_open_order_sns() if sn not in seen_sns]
+    for i in range(0, len(local_open), 50):
+        batch = local_open[i:i + 50]
+        try:
+            details = client.get_order_detail(batch).get("response", {}).get("order_list", [])
+        except Exception:
+            continue
+        for od in details:
+            if od.get("order_status") not in ("READY_TO_SHIP", "PROCESSED"):
+                models.mark_auto_completed(od["order_sn"])
+                auto_completed += 1
+
+    msg = f"{imported} pedido(s) sincronizado(s) da Shopee."
+    if auto_completed:
+        msg += f" {auto_completed} pedido(s) marcado(s) como concluído automaticamente (já coletado pela transportadora)."
+    flash(msg)
+    return redirect(url_for("dashboard"))
+    
+
 @app.route("/scan", methods=["GET", "POST"])
 def scan():
-    order = None
+   order = None
     if request.method == "POST":
         tracking = request.form.get("tracking_number", "")
         order = models.find_by_tracking(tracking)
