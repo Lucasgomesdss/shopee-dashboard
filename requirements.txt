@@ -1,4 +1,7 @@
+Leu um arquivo
+Leu um arquivo
 Flask==3.0.3
 requests==2.32.3
 reportlab==4.2.2
 gunicorn==22.0.0
+Pillow==10.4.0
