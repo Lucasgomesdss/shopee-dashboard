@@ -152,8 +152,13 @@ def sync():
     time_from = now - 15 * 24 * 3600  # últimos 15 dias
     cursor = ""
     imported = 0
-    while True:
+    max_pages = 30  # trava de segurança: nunca busca mais que 30 páginas (até 1500 pedidos) numa sincronização
+    for _ in range(max_pages):
         resp = client.get_order_list(time_from, now, cursor=cursor, order_status="READY_TO_SHIP")
+        if resp.get("error"):
+            flash(f"Erro da Shopee ao buscar pedidos: {resp.get('message') or resp.get('error')}")
+            return redirect(url_for("dashboard"))
+
         response = resp.get("response", {})
         order_list = response.get("order_list", [])
         order_sns = [o["order_sn"] for o in order_list]
@@ -176,7 +181,10 @@ def sync():
                 imported += 1
         if not response.get("more"):
             break
-        cursor = response.get("next_cursor", "")
+        next_cursor = response.get("next_cursor", "")
+        if not next_cursor or next_cursor == cursor:
+            break  # evita loop infinito se a API não avançar o cursor
+        cursor = next_cursor
 
     flash(f"{imported} pedido(s) sincronizado(s) da Shopee.")
     return redirect(url_for("dashboard"))
