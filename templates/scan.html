@@ -13,18 +13,22 @@
     <div class="card">
       <h3>Pedido {{ order.order_sn }}</h3>
       <p class="muted">Rastreio: {{ order.tracking_number }}</p>
-      <table>
-        <thead><tr><th>Produto</th><th>Variação</th><th>Qtd</th></tr></thead>
-        <tbody>
+      <div class="items-list">
         {% for item in order.items_json | fromjson %}
-          <tr>
-            <td>{{ item.name }}</td>
-            <td>{{ item.variation }}</td>
-            <td>{{ item.quantity }}</td>
-          </tr>
+          <div class="item-row {% if item.quantity > 1 %}qty-alert{% endif %}">
+            {% if item.image_url %}
+              <img src="{{ item.image_url }}" alt="{{ item.name }}" class="item-photo">
+            {% else %}
+              <div class="item-photo item-photo-placeholder">Sem foto</div>
+            {% endif %}
+            <div class="item-info">
+              <div class="item-name">{{ item.name }}</div>
+              <div class="item-variation">{{ item.variation }}</div>
+            </div>
+            <div class="item-qty {% if item.quantity > 1 %}qty-alert-badge{% endif %}">{{ item.quantity }}x</div>
+          </div>
         {% endfor %}
-        </tbody>
-      </table>
+      </div>
 
       <div class="row">
         <form class="inline" method="post" action="{{ url_for('complete_order', order_sn=order.order_sn) }}">
