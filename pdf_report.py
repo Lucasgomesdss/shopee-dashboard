@@ -32,9 +32,10 @@ def _fetch_image(url, size=IMG_SIZE):
         return None
 
 
-def build_picking_list_pdf(rows):
+def build_picking_list_pdf(rows, title="Lista de Pré-Separação", subtitle="pedidos em aberto"):
     """rows: lista de dicts com name, variation, quantity, image_url — já ordenada
-    pela quantidade total (maior primeiro)."""
+    pela quantidade total (maior primeiro). title/subtitle permitem reaproveitar essa
+    mesma função pro PDF de Produto Pendente (itens que faltaram na separação)."""
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=A4,
@@ -44,15 +45,15 @@ def build_picking_list_pdf(rows):
     styles = getSampleStyleSheet()
     elements = []
 
-    title = Paragraph("Lista de Pré-Separação", styles["Title"])
-    subtitle = Paragraph(
-        f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')} — pedidos em aberto",
+    title_p = Paragraph(title, styles["Title"])
+    subtitle_p = Paragraph(
+        f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')} — {subtitle}",
         styles["Normal"],
     )
-    elements += [title, subtitle, Spacer(1, 0.6 * cm)]
+    elements += [title_p, subtitle_p, Spacer(1, 0.6 * cm)]
 
     if not rows:
-        elements.append(Paragraph("Nenhum pedido em aberto no momento.", styles["Normal"]))
+        elements.append(Paragraph("Nenhum item encontrado no momento.", styles["Normal"]))
     else:
         cell_style = styles["Normal"]
         data = [["Foto", "Produto", "Variação", "Qtd"]]
