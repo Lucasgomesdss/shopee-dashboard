@@ -102,11 +102,15 @@ class ShopeeClient:
         resp.raise_for_status()
         return resp.json()
 
-    def get_order_list(self, time_from: int, time_to: int, cursor: str = "", order_status: str = "READY_TO_SHIP", page_size: int = 50):
-        """Lista pedidos por período e status. Status úteis: READY_TO_SHIP, PROCESSED, SHIPPED, COMPLETED, CANCELLED."""
+    def get_order_list(self, time_from: int, time_to: int, cursor: str = "", order_status: str = "READY_TO_SHIP", page_size: int = 50, time_range_field: str = "create_time"):
+        """Lista pedidos por período e status. Status úteis: READY_TO_SHIP, PROCESSED, SHIPPED, COMPLETED, CANCELLED.
+
+        time_range_field: 'create_time' (quando o pedido foi feito) ou 'update_time' (quando mudou
+        de status pela última vez). A Shopee só aceita até 15 dias de intervalo por chamada — quem
+        chama essa função é responsável por dividir períodos maiores em janelas de 15 dias."""
         path = "/api/v2/order/get_order_list"
         params = {
-            "time_range_field": "create_time",
+            "time_range_field": time_range_field,
             "time_from": time_from,
             "time_to": time_to,
             "page_size": page_size,
@@ -122,4 +126,14 @@ class ShopeeClient:
             "order_sn_list": ",".join(order_sn_list),
             "response_optional_fields": "item_list,recipient_address,shipping_carrier,package_list",
         }
+        return self._shop_request("GET", path, params=params)
+
+    def get_tracking_number(self, order_sn: str, package_number: str = None):
+        """Busca o código de rastreio de um pedido específico. Às vezes o get_order_detail
+        não traz o tracking_number junto (só depois que a etiqueta é gerada), então usamos
+        essa chamada dedicada como reforço."""
+        path = "/api/v2/logistics/get_tracking_number"
+        params = {"order_sn": order_sn}
+        if package_number:
+            params["package_number"] = package_number
         return self._shop_request("GET", path, params=params)
