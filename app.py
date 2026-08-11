@@ -221,10 +221,6 @@ def sync():
 
             window_end = window_start
 
-    flash(f"{imported} pedido(s) sincronizado(s) da Shopee.")
-    return redirect(url_for("dashboard"))
-
-
    # Limpeza automática: pedidos que ainda estão na fila local (a separar/pendente)
     # mas que não apareceram em READY_TO_SHIP/PROCESSED nesta sincronização podem já
     # ter sido despachados. Confirma direto na Shopee antes de mexer em qualquer coisa,
@@ -251,7 +247,7 @@ def sync():
 
 @app.route("/scan", methods=["GET", "POST"])
 def scan():
-   order = None
+    order = None
     if request.method == "POST":
         tracking = request.form.get("tracking_number", "")
         order = models.find_by_tracking(tracking)
