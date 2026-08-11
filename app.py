@@ -138,12 +138,17 @@ def shopee_callback():
 
 @app.route("/sync", methods=["POST"])
 def sync():
-    """Busca pedidos 'Pronto para envio' na Shopee e traz para a fila local de separação.
+    """Busca pedidos pendentes de separação na Shopee e traz para a fila local.
 
     A API da Shopee só aceita janelas de até 15 dias por chamada, então varremos os
     últimos 90 dias em blocos de 15 dias (senão pedidos mais antigos parados na fila
     ficavam de fora da sincronização). Usamos 'update_time' como referência, porque é
-    quando o pedido passou a ficar pronto para envio — não quando ele foi criado."""
+    quando o pedido mudou de status — não quando ele foi criado.
+
+    Buscamos dois status: READY_TO_SHIP (pago, ainda sem etiqueta gerada) e PROCESSED
+    (etiqueta já gerada, aguardando despacho). Como a etiqueta é impressa antes de o
+    pedido ir pro time separar, a maioria dos pedidos chega pra separação já em
+    PROCESSED — se buscássemos só READY_TO_SHIP, ficaria de fora quase tudo."""
     if USE_MOCK_DATA:
         flash("Modo demonstração ativo — os pedidos de exemplo já estão carregados.")
         return redirect(url_for("dashboard"))
@@ -156,61 +161,63 @@ def sync():
     now = int(time.time())
     lookback_days = 90
     window_days = 15  # limite máximo da Shopee por chamada
-    max_pages_per_window = 30  # trava de segurança: até 1500 pedidos por janela
+    max_pages_per_window = 30  # trava de segurança: até 1500 pedidos por janela/status
+    order_statuses = ["READY_TO_SHIP", "PROCESSED"]
 
     imported = 0
-    window_end = now
     oldest = now - lookback_days * 24 * 3600
-    while window_end > oldest:
-        window_start = max(window_end - window_days * 24 * 3600, oldest)
-        cursor = ""
-        for _ in range(max_pages_per_window):
-            resp = client.get_order_list(
-                window_start, window_end, cursor=cursor,
-                order_status="READY_TO_SHIP", time_range_field="update_time",
-            )
-            if resp.get("error"):
-                flash(f"Erro da Shopee ao buscar pedidos: {resp.get('message') or resp.get('error')}")
-                return redirect(url_for("dashboard"))
+    for status in order_statuses:
+        window_end = now
+        while window_end > oldest:
+            window_start = max(window_end - window_days * 24 * 3600, oldest)
+            cursor = ""
+            for _ in range(max_pages_per_window):
+                resp = client.get_order_list(
+                    window_start, window_end, cursor=cursor,
+                    order_status=status, time_range_field="update_time",
+                )
+                if resp.get("error"):
+                    flash(f"Erro da Shopee ao buscar pedidos ({status}): {resp.get('message') or resp.get('error')}")
+                    return redirect(url_for("dashboard"))
 
-            response = resp.get("response", {})
-            order_list = response.get("order_list", [])
-            order_sns = [o["order_sn"] for o in order_list]
-            if order_sns:
-                details = client.get_order_detail(order_sns).get("response", {}).get("order_list", [])
-                for od in details:
-                    items = [
-                        {
-                            "name": it.get("item_name"),
-                            "variation": it.get("model_name") or "-",
-                            "quantity": it.get("model_quantity_purchased", 1),
-                            "image_url": (it.get("image_info") or {}).get("image_url", ""),
-                        }
-                        for it in od.get("item_list", [])
-                    ]
-                    tracking = None
-                    packages = od.get("package_list") or []
-                    if packages:
-                        tracking = packages[0].get("tracking_number")
-                    if not tracking:
-                        # Nem sempre o get_order_detail já traz o rastreio — busca direto
-                        # na API de logística como reforço.
-                        try:
-                            tn_resp = client.get_tracking_number(od["order_sn"])
-                            tracking = tn_resp.get("response", {}).get("tracking_number") or None
-                        except Exception:
-                            tracking = None
-                    models.upsert_order(od["order_sn"], tracking, items)
-                    imported += 1
+                response = resp.get("response", {})
+                order_list = response.get("order_list", [])
+                order_sns = [o["order_sn"] for o in order_list]
+                if order_sns:
+                    details = client.get_order_detail(order_sns).get("response", {}).get("order_list", [])
+                    for od in details:
+                        items = [
+                            {
+                                "name": it.get("item_name"),
+                                "variation": it.get("model_name") or "-",
+                                "quantity": it.get("model_quantity_purchased", 1),
+                                "image_url": (it.get("image_info") or {}).get("image_url", ""),
+                            }
+                            for it in od.get("item_list", [])
+                        ]
+                        tracking = None
+                        packages = od.get("package_list") or []
+                        if packages:
+                            tracking = packages[0].get("tracking_number")
+                        if not tracking:
+                            # Nem sempre o get_order_detail já traz o rastreio — busca direto
+                            # na API de logística como reforço.
+                            try:
+                                tn_resp = client.get_tracking_number(od["order_sn"])
+                                tracking = tn_resp.get("response", {}).get("tracking_number") or None
+                            except Exception:
+                                tracking = None
+                        models.upsert_order(od["order_sn"], tracking, items)
+                        imported += 1
 
-            if not response.get("more"):
-                break
-            next_cursor = response.get("next_cursor", "")
-            if not next_cursor or next_cursor == cursor:
-                break  # evita loop infinito se a API não avançar o cursor
-            cursor = next_cursor
+                if not response.get("more"):
+                    break
+                next_cursor = response.get("next_cursor", "")
+                if not next_cursor or next_cursor == cursor:
+                    break  # evita loop infinito se a API não avançar o cursor
+                cursor = next_cursor
 
-        window_end = window_start
+            window_end = window_start
 
     flash(f"{imported} pedido(s) sincronizado(s) da Shopee.")
     return redirect(url_for("dashboard"))
