@@ -269,12 +269,19 @@ def sync():
 
 @app.route("/dia-finalizado", methods=["POST"])
 def dia_finalizado():
-    """Conferência de fim de dia: verifica com a Shopee quais pedidos já marcados como
-    Concluídos (separados) foram de fato coletados pela transportadora (status SHIPPED
-    ou COMPLETED) e os arquiva — somem da lista/contagem de Concluídos, mas continuam
-    salvos no banco pra histórico. Feito sob demanda (não em toda sincronização),
-    porque é uma conferência mais pesada: revisa pedidos que já foram tratados, não só
-    os novos."""
+    """Conferência de fim de dia (a parte mais pesada, por isso é sob demanda e não em
+    toda sincronização):
+
+    1) Verifica com a Shopee quais pedidos já marcados como Concluídos (separados)
+       foram de fato coletados pela transportadora (status SHIPPED ou COMPLETED) e os
+       arquiva — somem da lista/contagem de Concluídos, mas continuam salvos no banco
+       pra histórico.
+
+    2) Verifica com a Shopee os pedidos que ainda estão em A separar/Pendente e já
+       saíram do status PROCESSED (foram despachados por outro canal, cancelados,
+       etc) sem que o time chegasse a bipar -- esses também são arquivados, pra que
+       'A separar' não fique cheio de pedidos que na prática já saíram da Shopee.
+       Isso é o que corrige a contagem de A separar ficando maior que a realidade."""
     if USE_MOCK_DATA:
         flash("Modo demonstração ativo.")
         return redirect(url_for("dashboard"))
@@ -284,7 +291,7 @@ def dia_finalizado():
         flash("Nenhuma loja conectada ainda.")
         return redirect(url_for("dashboard"))
 
-    archived = 0
+    archived_completed = 0
     completed_sns = models.list_completed_order_sns(limit=500)
     for i in range(0, len(completed_sns), 50):
         batch = completed_sns[i:i + 50]
@@ -295,9 +302,25 @@ def dia_finalizado():
         for od in details:
             if od.get("order_status") in ("SHIPPED", "COMPLETED"):
                 models.archive_order(od["order_sn"])
-                archived += 1
+                archived_completed += 1
 
-    flash(f"Dia finalizado: {archived} pedido(s) coletado(s) removido(s) da lista de concluídos.")
+    archived_stale = 0
+    open_sns = models.list_open_order_sns(limit=500)
+    for i in range(0, len(open_sns), 50):
+        batch = open_sns[i:i + 50]
+        try:
+            details = client.get_order_detail(batch).get("response", {}).get("order_list", [])
+        except Exception:
+            continue
+        for od in details:
+            if od.get("order_status") != "PROCESSED":
+                models.archive_order(od["order_sn"])
+                archived_stale += 1
+
+    flash(
+        f"Dia finalizado: {archived_completed} pedido(s) coletado(s) removido(s) dos concluídos, "
+        f"{archived_stale} pedido(s) que já saíram da Shopee removido(s) da fila de separação."
+    )
     return redirect(url_for("dashboard"))
 
 

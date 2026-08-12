@@ -228,27 +228,19 @@ def open_orders_items():
         return all_items
 
 
-def list_open_order_sns():
-    """order_sn de pedidos ainda nao concluidos (to_separate + pending), usado no /sync
-    para descobrir quais pedidos locais podem ja ter sido despachados na Shopee."""
+def list_open_order_sns(limit: int = 500):
+    """order_sn de pedidos ainda na fila local (a separar + pendente), mais antigos
+    primeiro — usado no 'Dia finalizado' para verificar com a Shopee quais já saíram
+    do status PROCESSED (foram enviados por outro canal, cancelados, etc) sem passar
+    pelo escaneamento do time, e arquivá-los, corrigindo a contagem de 'A separar'.
+    Limitado por chamada pra não estourar o tempo do botão quando o backlog crescer
+    muito; o restante é checado nas próximas conferências."""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT order_sn FROM orders WHERE status IN (?, ?)",
-            (STATUS_TO_SEPARATE, STATUS_PENDING),
+            "SELECT order_sn FROM orders WHERE status IN (?, ?) ORDER BY updated_at ASC LIMIT ?",
+            (STATUS_TO_SEPARATE, STATUS_PENDING, limit),
         ).fetchall()
         return [r["order_sn"] for r in rows]
-
-
-def mark_auto_completed(order_sn: str):
-    """Marca um pedido como concluido automaticamente: saiu de READY_TO_SHIP/PROCESSED na Shopee
-    (ja foi coletado pela transportadora) mas o time esqueceu de confirmar manualmente."""
-    now = datetime.utcnow().isoformat()
-    with get_conn() as conn:
-        conn.execute(
-            """UPDATE orders SET status = ?, employee_name = ?, confirmed_at = ?,
-            pending_reason = NULL, updated_at = ? WHERE order_sn = ?""",
-            (STATUS_COMPLETED, "Auto (Shopee)", now, now, order_sn),
-        )
 
 
 def list_completed_order_sns(limit: int = 200):
@@ -266,8 +258,8 @@ def list_completed_order_sns(limit: int = 200):
 
 
 def archive_order(order_sn: str):
-    """Arquiva um pedido concluído já coletado pela transportadora: sai da lista e da
-    contagem de Concluídos, mas não é apagado — fica salvo no banco pra consulta futura."""
+    """Arquiva um pedido: sai da lista e da contagem (seja de Concluídos, seja de
+    A separar/Pendente), mas não é apagado — fica salvo no banco pra consulta futura."""
     now = datetime.utcnow().isoformat()
     with get_conn() as conn:
         conn.execute(
