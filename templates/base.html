@@ -11,18 +11,34 @@
     <a class="brand" href="{{ url_for('dashboard') }}">📦 Separação de Pedidos</a>
     <nav>
       <a href="{{ url_for('scan') }}">Escanear</a>
-      <a href="{{ url_for('pending_tab') }}">Pendências</a>
+      <a href="{{ url_for('pending_tab') }}">Produto Pendente</a>
       <a href="{{ url_for('completed_tab') }}">Concluídos</a>
       {% if employee_name %}<span style="opacity:.85">| {{ employee_name }}</span> <a href="{{ url_for('logout') }}">Sair</a>{% endif %}
     </nav>
   </header>
-  <main>
-    {% with messages = get_flashed_messages() %}
-      {% if messages %}
-        {% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}
-      {% endif %}
-    {% endwith %}
-    {% block content %}{% endblock %}
-  </main>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-stat to_separate">
+        <span class="n">{{ sidebar_counts.to_separate }}</span>
+        <span class="label">A separar</span>
+      </div>
+      <div class="sidebar-stat pending">
+        <span class="n">{{ sidebar_counts.pending }}</span>
+        <span class="label">Falta produto</span>
+      </div>
+      <div class="sidebar-stat completed">
+        <span class="n">{{ sidebar_counts.completed }}</span>
+        <span class="label">Separados</span>
+      </div>
+    </aside>
+    <main>
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}
+          {% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}
+        {% endif %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
 </body>
 </html>
