@@ -225,7 +225,7 @@ def sync():
                         packages = od.get("package_list") or []
                         if packages:
                             tracking = packages[0].get("tracking_number")
-                        if not tracking:
+                        if not tracking and status == "PROCESSED":
                             # Nem sempre o get_order_detail já traz o rastreio — busca direto
                             # na API de logística como reforço.
                             try:
