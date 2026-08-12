@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Escanear pedido{% endblock %}
 {% block content %}
+  {% if daily_phrase %}
+    <div class="phrase-box">💜 {{ daily_phrase }}</div>
+  {% endif %}
   <div class="card">
     <h3>Escanear código de rastreio</h3>
     <form method="post">
@@ -10,14 +13,20 @@
   </div>
   {% if order %}
     {% set order_items = order.items_json | fromjson %}
+    {% set already_done = order.status == "completed" %}
     <div class="card">
       <h3>Pedido {{ order.order_sn }}</h3>
       <p class="muted">Rastreio: {{ order.tracking_number }}</p>
+      {% if already_done %}
+        <p class="already-separated-banner">✅ Pedido já separado — nenhuma ação adicional é necessária.</p>
+      {% endif %}
       <form id="missing-form" method="post" action="{{ url_for('missing_product', order_sn=order.order_sn) }}">
         <div class="items-list">
           {% for item in order_items %}
             <div class="item-row {% if item.quantity > 1 %}qty-alert{% endif %}">
-              <input type="checkbox" name="missing_item" value="{{ loop.index0 }}" title="Marcar como item que faltou">
+              {% if not already_done %}
+                <input type="checkbox" name="missing_item" value="{{ loop.index0 }}" title="Marcar como item que faltou">
+              {% endif %}
               {% if item.image_url %}
                 <img src="{{ item.image_url }}" alt="{{ item.name }}" class="item-photo">
               {% else %}
@@ -26,6 +35,7 @@
               <div class="item-info">
                 <div class="item-name">{{ item.name }}</div>
                 <div class="item-variation">{{ item.variation }}</div>
+                {% if item.sku %}<div class="item-sku">SKU: {{ item.sku }}</div>{% endif %}
               </div>
               <div class="item-qty {% if item.quantity > 1 %}qty-alert-badge{% endif %}">{{ item.quantity }}x</div>
             </div>
@@ -36,19 +46,21 @@
         <span>Total de itens no pedido</span>
         <span>{{ order_items | sum(attribute="quantity") }}x</span>
       </div>
-      <div class="row" style="flex-direction: column; align-items: flex-start; gap: 8px;">
-        <form class="inline" method="post" action="{{ url_for('complete_order', order_sn=order.order_sn) }}">
-          <button type="submit" class="btn-ok">✅ Separado, dar OK</button>
-        </form>
-        <button type="submit" form="missing-form" class="btn-warn btn-sm">❌ Falta produto</button>
-      </div>
-      <details style="margin-top:16px;">
-        <summary class="muted" style="cursor:pointer;">Tem algum problema com esse pedido?</summary>
-        <form method="post" action="{{ url_for('pending_order', order_sn=order.order_sn) }}" style="margin-top:10px;">
-          <input type="text" name="reason" placeholder="Descreva o problema (ex: item avariado)" required>
-          <button type="submit" class="btn-warn">⚠️ Marcar pendência</button>
-        </form>
-      </details>
+      {% if not already_done %}
+        <div class="row" style="flex-direction: column; align-items: flex-start; gap: 8px;">
+          <form class="inline" method="post" action="{{ url_for('complete_order', order_sn=order.order_sn) }}">
+            <button type="submit" class="btn-ok">✅ Separado, dar OK</button>
+          </form>
+          <button type="submit" form="missing-form" class="btn-warn btn-sm">❌ Falta produto</button>
+        </div>
+        <details style="margin-top:16px;">
+          <summary class="muted" style="cursor:pointer;">Tem algum problema com esse pedido?</summary>
+          <form method="post" action="{{ url_for('pending_order', order_sn=order.order_sn) }}" style="margin-top:10px;">
+            <input type="text" name="reason" placeholder="Descreva o problema (ex: item avariado)" required>
+            <button type="submit" class="btn-warn">⚠️ Marcar pendência</button>
+          </form>
+        </details>
+      {% endif %}
     </div>
   {% endif %}
 {% endblock %}
