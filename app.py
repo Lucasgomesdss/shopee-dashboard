@@ -60,9 +60,33 @@ def get_employee_name():
     return session.get("employee_name", "")
 
 
+def _aggregate_items(items):
+    """Agrupa uma lista de itens (name, variation, quantity, image_url) somando as
+    quantidades por produto/variação — usado tanto na pré-separação quanto no
+    Produto Pendente."""
+    totals = defaultdict(int)
+    images = {}
+    for it in items:
+        key = (it["name"], it["variation"])
+        totals[key] += it["quantity"]
+        if not images.get(key):
+            images[key] = it.get("image_url") or ""
+    return [
+        {"name": name, "variation": variation, "quantity": qty, "image_url": images.get((name, variation), "")}
+        for (name, variation), qty in sorted(totals.items(), key=lambda kv: (-kv[1], kv[0][0]))
+    ]
+
+
 @app.context_processor
 def inject_employee_name():
     return {"employee_name": get_employee_name()}
+
+
+@app.context_processor
+def inject_sidebar_counts():
+    """Deixa os contadores (a separar / falta produto / separados) disponíveis em
+    todas as páginas, pra mostrar na barra lateral sem precisar repetir em cada rota."""
+    return {"sidebar_counts": models.counts()}
 
 
 @app.before_request
@@ -221,7 +245,7 @@ def sync():
 
             window_end = window_start
 
-   # Limpeza automática: pedidos que ainda estão na fila local (a separar/pendente)
+    # Limpeza automática: pedidos que ainda estão na fila local (a separar/pendente)
     # mas que não apareceram em READY_TO_SHIP/PROCESSED nesta sincronização podem já
     # ter sido despachados. Confirma direto na Shopee antes de mexer em qualquer coisa,
     # pra não marcar como concluído por engano (ex: pedido antigo fora da janela de 3 dias).
@@ -243,7 +267,7 @@ def sync():
         msg += f" {auto_completed} pedido(s) marcado(s) como concluído automaticamente (já coletado pela transportadora)."
     flash(msg)
     return redirect(url_for("dashboard"))
-    
+
 
 @app.route("/scan", methods=["GET", "POST"])
 def scan():
@@ -274,6 +298,29 @@ def pending_order(order_sn):
     return redirect(url_for("scan"))
 
 
+@app.route("/order/<order_sn>/missing-product", methods=["POST"])
+def missing_product(order_sn):
+    """O separador marca qual(is) item(ns) do pedido não foram encontrados no estoque.
+    O pedido vai pra fila de Produto Pendente e os itens entram na lista agregada
+    (usada pra gerar o PDF de busca em massa na expedição)."""
+    order = models.get_order(order_sn)
+    if not order:
+        flash(f"Pedido {order_sn} não encontrado.")
+        return redirect(url_for("scan"))
+
+    items = json.loads(order["items_json"])
+    selected = request.form.getlist("missing_item")
+    missing_items = [items[int(i)] for i in selected if i.isdigit() and int(i) < len(items)]
+
+    if not missing_items:
+        flash("Selecione ao menos um item que faltou antes de confirmar.")
+        return redirect(url_for("scan"))
+
+    models.mark_missing_product(order_sn, get_employee_name(), missing_items)
+    flash(f"Pedido {order_sn} movido para Produto Pendente ({len(missing_items)} item(ns) faltando).")
+    return redirect(url_for("scan"))
+
+
 @app.route("/order/<order_sn>/reopen", methods=["POST"])
 def reopen_order(order_sn):
     models.reopen(order_sn)
@@ -284,7 +331,8 @@ def reopen_order(order_sn):
 @app.route("/pendencias")
 def pending_tab():
     orders = models.list_by_status(models.STATUS_PENDING)
-    return render_template("pending.html", orders=orders)
+    missing_rows = _aggregate_items(models.list_missing_items())
+    return render_template("pending.html", orders=orders, missing_rows=missing_rows)
 
 
 @app.route("/concluidos")
@@ -295,21 +343,19 @@ def completed_tab():
 
 @app.route("/picking-list.pdf")
 def picking_list_pdf():
-    items = models.open_orders_items()
-    totals = defaultdict(int)
-    images = {}
-    for it in items:
-        key = (it["name"], it["variation"])
-        totals[key] += it["quantity"]
-        if not images.get(key):
-            images[key] = it.get("image_url") or ""
-
-    rows = [
-        {"name": name, "variation": variation, "quantity": qty, "image_url": images.get((name, variation), "")}
-        for (name, variation), qty in sorted(totals.items(), key=lambda kv: (-kv[1], kv[0][0]))
-    ]
+    rows = _aggregate_items(models.open_orders_items())
     pdf_buffer = build_picking_list_pdf(rows)
     filename = f"pre-separacao-{datetime.now().strftime('%Y%m%d-%H%M')}.pdf"
+    return send_file(pdf_buffer, mimetype="application/pdf", as_attachment=True, download_name=filename)
+
+
+@app.route("/produto-pendente.pdf")
+def missing_products_pdf():
+    rows = _aggregate_items(models.list_missing_items())
+    pdf_buffer = build_picking_list_pdf(
+        rows, title="Produto Pendente", subtitle="itens que faltaram na separação"
+    )
+    filename = f"produto-pendente-{datetime.now().strftime('%Y%m%d-%H%M')}.pdf"
     return send_file(pdf_buffer, mimetype="application/pdf", as_attachment=True, download_name=filename)
 
 
