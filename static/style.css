@@ -149,6 +149,7 @@ form.inline { display: inline; }
 .item-info { flex: 1; min-width: 0; }
 .item-name { font-weight: 600; font-size: 1.05rem; }
 .item-variation { color: #666; font-size: 0.9rem; margin-top: 2px; }
+.item-sku { color: #999; font-size: 0.8rem; margin-top: 2px; }
 .item-qty {
   font-weight: 700;
   font-size: 1.2rem;
@@ -177,4 +178,26 @@ form.inline { display: inline; }
   background: #f7f7f9;
   border-radius: 10px;
   font-weight: 700;
+}
+
+.phrase-box {
+  background: linear-gradient(135deg, #fdf0f5, #fbe4ee);
+  border: 1px solid #f6c8dc;
+  color: #a8305c;
+  padding: 14px 18px;
+  border-radius: 10px;
+  margin-bottom: 16px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  line-height: 1.4;
+}
+
+.already-separated-banner {
+  background: #e5f7ec;
+  color: var(--ok);
+  border: 1px solid #b9e8cb;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-weight: 700;
+  margin: 10px 0;
 }
