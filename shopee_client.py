@@ -121,11 +121,16 @@ class ShopeeClient:
         return self._shop_request("GET", path, params=params)
 
     def get_order_detail(self, order_sn_list: list):
-        """Detalhes de até 50 pedidos por chamada: itens, variação, quantidade, tracking_number etc."""
+        """Detalhes de até 50 pedidos por chamada: itens, variação, quantidade, tracking_number,
+        e fulfillment_flag (se o pedido é separado pelo próprio vendedor -- fulfilled_by_local_seller
+        -- ou se é Fulfilled by Shopee/FBS -- fulfilled_by_shopee, caso em que o estoque fica no
+        centro de distribuição da Shopee e o nosso time nunca chega a separar fisicamente esse
+        pedido). Sem pedir esse campo explicitamente em response_optional_fields a Shopee não
+        devolve ele, e por isso os pedidos FBS estavam entrando na nossa fila de separação."""
         path = "/api/v2/order/get_order_detail"
         params = {
             "order_sn_list": ",".join(order_sn_list),
-            "response_optional_fields": "item_list,recipient_address,shipping_carrier,package_list",
+            "response_optional_fields": "item_list,recipient_address,shipping_carrier,package_list,fulfillment_flag",
         }
         return self._shop_request("GET", path, params=params)
 
