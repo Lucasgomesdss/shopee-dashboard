@@ -251,13 +251,16 @@ def mark_auto_completed(order_sn: str):
         )
 
 
-def list_completed_order_sns():
-    """order_sn dos pedidos que estão em Concluídos, usado no /sync para verificar se a
-    Shopee já confirma que foram de fato coletados pela transportadora e, se sim,
-    arquivá-los (somem da lista/contagem de Concluídos mas continuam salvos no banco)."""
+def list_completed_order_sns(limit: int = 200):
+    """order_sn dos pedidos em Concluídos, mais antigos primeiro (são os mais prováveis
+    de já terem sido coletados) — usado no /sync para verificar com a Shopee e arquivar
+    os que já foram coletados. Limitado por chamada pra não estourar o tempo do /sync
+    quando o backlog de concluídos crescer muito; o restante é checado nas próximas
+    sincronizações."""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT order_sn FROM orders WHERE status = ?", (STATUS_COMPLETED,)
+            "SELECT order_sn FROM orders WHERE status = ? ORDER BY confirmed_at ASC LIMIT ?",
+            (STATUS_COMPLETED, limit),
         ).fetchall()
         return [r["order_sn"] for r in rows]
 
