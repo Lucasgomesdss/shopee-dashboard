@@ -1,7 +1,7 @@
 """Geração do PDF de pré-separação: soma a quantidade de cada produto/variação
-entre todos os pedidos ainda em aberto (a separar + pendentes), com a foto de cada
-produto (a mesma cadastrada na Shopee) para facilitar a conferência visual no estoque.
-Quantidades maiores que 1 aparecem destacadas em vermelho."""
+entre todos os pedidos ainda em aberto (a separar + pendentes), com a foto, o SKU e o
+título de cada produto (a mesma cadastrada na Shopee) para facilitar a conferência
+visual no estoque. Quantidades maiores que 1 aparecem destacadas em vermelho."""
 
 from io import BytesIO
 from datetime import datetime
@@ -53,9 +53,10 @@ def _bytes_to_image(content, size=IMG_SIZE):
 
 
 def build_picking_list_pdf(rows, title="Lista de Pré-Separação", subtitle="pedidos em aberto"):
-    """rows: lista de dicts com name, variation, quantity, image_url — já ordenada
-    pela quantidade total (maior primeiro). title/subtitle permitem reaproveitar essa
-    mesma função pro PDF de Produto Pendente (itens que faltaram na separação).
+    """rows: lista de dicts com name, variation, sku, quantity, image_url — já
+    ordenada pela quantidade total (maior primeiro). title/subtitle permitem
+    reaproveitar essa mesma função pro PDF de Produto Pendente (itens que faltaram
+    na separação).
 
     As fotos são baixadas em paralelo (até 10 por vez) antes de montar a tabela —
     baixar uma por uma deixava o PDF muito lento quando havia muitos produtos
@@ -86,7 +87,7 @@ def build_picking_list_pdf(rows, title="Lista de Pré-Separação", subtitle="pe
         with ThreadPoolExecutor(max_workers=10) as executor:
             images_bytes = list(executor.map(_download_image_bytes, urls))
 
-        data = [["Foto", "Produto", "Variação", "Qtd"]]
+        data = [["Foto", "Produto", "SKU", "Variação", "Qtd"]]
         qty_alert_rows = []  # linhas (índice na tabela) com quantidade > 1, para destacar em vermelho
         total_geral = 0
         for i, (row, img_bytes) in enumerate(zip(rows, images_bytes), start=1):
@@ -94,15 +95,16 @@ def build_picking_list_pdf(rows, title="Lista de Pré-Separação", subtitle="pe
             data.append([
                 img or "sem foto",
                 Paragraph(row["name"] or "-", cell_style),
+                Paragraph(row.get("sku") or "-", cell_style),
                 Paragraph(row["variation"] or "-", cell_style),
                 str(row["quantity"]),
             ])
             total_geral += row["quantity"]
             if row["quantity"] > 1:
                 qty_alert_rows.append(i)
-        data.append(["", "", "TOTAL", str(total_geral)])
+        data.append(["", "", "", "TOTAL", str(total_geral)])
 
-        table = Table(data, colWidths=[2.4 * cm, 7.1 * cm, 4.5 * cm, 2.5 * cm], repeatRows=1)
+        table = Table(data, colWidths=[2.2 * cm, 5.4 * cm, 2.8 * cm, 3.6 * cm, 2.5 * cm], repeatRows=1)
         style_commands = [
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EE4D2D")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -113,7 +115,7 @@ def build_picking_list_pdf(rows, title="Lista de Pré-Separação", subtitle="pe
             ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
             ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#FFE4DB")),
             ("ALIGN", (0, 0), (0, -1), "CENTER"),
-            ("ALIGN", (3, 0), (3, -1), "CENTER"),
+            ("ALIGN", (4, 0), (4, -1), "CENTER"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("TOPPADDING", (0, 0), (-1, -1), 6),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
@@ -121,9 +123,9 @@ def build_picking_list_pdf(rows, title="Lista de Pré-Separação", subtitle="pe
         # Destaca em vermelho a quantidade de itens vendidos em mais de 1 unidade no
         # mesmo pedido, para o colaborador não esquecer de pegar mais de uma peça.
         for row_idx in qty_alert_rows:
-            style_commands.append(("TEXTCOLOR", (3, row_idx), (3, row_idx), colors.red))
-            style_commands.append(("FONTSIZE", (3, row_idx), (3, row_idx), 13))
-            style_commands.append(("BOX", (3, row_idx), (3, row_idx), 1.2, colors.red))
+            style_commands.append(("TEXTCOLOR", (4, row_idx), (4, row_idx), colors.red))
+            style_commands.append(("FONTSIZE", (4, row_idx), (4, row_idx), 13))
+            style_commands.append(("BOX", (4, row_idx), (4, row_idx), 1.2, colors.red))
         table.setStyle(TableStyle(style_commands))
         elements.append(table)
 
