@@ -21,6 +21,7 @@ DB_PATH = "/var/data/dashboard.db" if os.path.isdir("/var/data") else os.path.jo
 STATUS_TO_SEPARATE = "to_separate"   # ainda não foi escaneado/separado
 STATUS_PENDING = "pending"           # separação com problema (item faltando, etc.)
 STATUS_COMPLETED = "completed"       # separado e conferido com OK do colaborador
+STATUS_ARCHIVED = "archived"         # concluído E já coletado pela transportadora — some da lista/contagem mas fica salvo
 
 
 @contextmanager
@@ -237,6 +238,7 @@ def list_open_order_sns():
         ).fetchall()
         return [r["order_sn"] for r in rows]
 
+
 def mark_auto_completed(order_sn: str):
     """Marca um pedido como concluido automaticamente: saiu de READY_TO_SHIP/PROCESSED na Shopee
     (ja foi coletado pela transportadora) mas o time esqueceu de confirmar manualmente."""
@@ -246,4 +248,26 @@ def mark_auto_completed(order_sn: str):
             """UPDATE orders SET status = ?, employee_name = ?, confirmed_at = ?,
             pending_reason = NULL, updated_at = ? WHERE order_sn = ?""",
             (STATUS_COMPLETED, "Auto (Shopee)", now, now, order_sn),
+        )
+
+
+def list_completed_order_sns():
+    """order_sn dos pedidos que estão em Concluídos, usado no /sync para verificar se a
+    Shopee já confirma que foram de fato coletados pela transportadora e, se sim,
+    arquivá-los (somem da lista/contagem de Concluídos mas continuam salvos no banco)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT order_sn FROM orders WHERE status = ?", (STATUS_COMPLETED,)
+        ).fetchall()
+        return [r["order_sn"] for r in rows]
+
+
+def archive_order(order_sn: str):
+    """Arquiva um pedido concluído já coletado pela transportadora: sai da lista e da
+    contagem de Concluídos, mas não é apagado — fica salvo no banco pra consulta futura."""
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE orders SET status = ?, updated_at = ? WHERE order_sn = ?",
+            (STATUS_ARCHIVED, now, order_sn),
         )
