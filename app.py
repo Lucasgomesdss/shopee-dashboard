@@ -262,9 +262,27 @@ def sync():
                 models.mark_auto_completed(od["order_sn"])
                 auto_completed += 1
 
+    # Arquivamento: pedidos que já estão em Concluídos mas que a Shopee confirma que
+    # já foram de fato coletados pela transportadora (status SHIPPED/COMPLETED) saem
+    # da lista e da contagem de Concluídos — ficam só salvos no banco pra histórico.
+    archived = 0
+    completed_sns = models.list_completed_order_sns()
+    for i in range(0, len(completed_sns), 50):
+        batch = completed_sns[i:i + 50]
+        try:
+            details = client.get_order_detail(batch).get("response", {}).get("order_list", [])
+        except Exception:
+            continue
+        for od in details:
+            if od.get("order_status") in ("SHIPPED", "COMPLETED"):
+                models.archive_order(od["order_sn"])
+                archived += 1
+
     msg = f"{imported} pedido(s) sincronizado(s) da Shopee."
     if auto_completed:
         msg += f" {auto_completed} pedido(s) marcado(s) como concluído automaticamente (já coletado pela transportadora)."
+    if archived:
+        msg += f" {archived} pedido(s) coletado(s) removido(s) da lista de concluídos."
     flash(msg)
     return redirect(url_for("dashboard"))
 
