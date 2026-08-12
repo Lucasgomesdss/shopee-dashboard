@@ -5,6 +5,7 @@ Quantidades maiores que 1 aparecem destacadas em vermelho."""
 
 from io import BytesIO
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -16,16 +17,35 @@ from reportlab.lib.styles import getSampleStyleSheet
 
 IMG_SIZE = 1.8 * cm
 
+# Cache em memória das fotos já baixadas (dura enquanto o processo do servidor estiver
+# de pé). Os mesmos produtos aparecem de novo a cada PDF gerado, então isso evita
+# baixar a mesma imagem repetidas vezes e deixa as próximas gerações bem mais rápidas.
+_image_bytes_cache = {}
+_image_session = requests.Session()
 
-def _fetch_image(url, size=IMG_SIZE):
-    """Baixa a foto do produto da Shopee para colocar no PDF. Se não tiver imagem ou o
-    download falhar (link quebrado, timeout), a linha fica só com o texto mesmo."""
+
+def _download_image_bytes(url):
+    """Baixa os bytes de uma foto (com cache). Se não tiver imagem ou o download
+    falhar (link quebrado, timeout), volta None e a linha fica só com o texto."""
     if not url:
         return None
+    if url in _image_bytes_cache:
+        return _image_bytes_cache[url]
     try:
-        resp = requests.get(url, timeout=8)
+        resp = _image_session.get(url, timeout=5)
         resp.raise_for_status()
-        img = Image(BytesIO(resp.content), width=size, height=size)
+        _image_bytes_cache[url] = resp.content
+        return resp.content
+    except Exception:
+        _image_bytes_cache[url] = None
+        return None
+
+
+def _bytes_to_image(content, size=IMG_SIZE):
+    if not content:
+        return None
+    try:
+        img = Image(BytesIO(content), width=size, height=size)
         img.hAlign = "CENTER"
         return img
     except Exception:
@@ -35,7 +55,11 @@ def _fetch_image(url, size=IMG_SIZE):
 def build_picking_list_pdf(rows, title="Lista de Pré-Separação", subtitle="pedidos em aberto"):
     """rows: lista de dicts com name, variation, quantity, image_url — já ordenada
     pela quantidade total (maior primeiro). title/subtitle permitem reaproveitar essa
-    mesma função pro PDF de Produto Pendente (itens que faltaram na separação)."""
+    mesma função pro PDF de Produto Pendente (itens que faltaram na separação).
+
+    As fotos são baixadas em paralelo (até 10 por vez) antes de montar a tabela —
+    baixar uma por uma deixava o PDF muito lento quando havia muitos produtos
+    diferentes na lista (cada download é uma chamada de rede separada pra Shopee)."""
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=A4,
@@ -56,11 +80,17 @@ def build_picking_list_pdf(rows, title="Lista de Pré-Separação", subtitle="pe
         elements.append(Paragraph("Nenhum item encontrado no momento.", styles["Normal"]))
     else:
         cell_style = styles["Normal"]
+
+        # Baixa todas as fotos em paralelo antes de montar a tabela.
+        urls = [row.get("image_url") for row in rows]
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            images_bytes = list(executor.map(_download_image_bytes, urls))
+
         data = [["Foto", "Produto", "Variação", "Qtd"]]
         qty_alert_rows = []  # linhas (índice na tabela) com quantidade > 1, para destacar em vermelho
         total_geral = 0
-        for i, row in enumerate(rows, start=1):
-            img = _fetch_image(row.get("image_url"))
+        for i, (row, img_bytes) in enumerate(zip(rows, images_bytes), start=1):
+            img = _bytes_to_image(img_bytes)
             data.append([
                 img or "sem foto",
                 Paragraph(row["name"] or "-", cell_style),
