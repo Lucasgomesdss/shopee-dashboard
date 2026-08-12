@@ -40,9 +40,17 @@
 
   <div class="card">
     <h3>Sincronizar com a Shopee</h3>
-    <p class="muted">Busca os pedidos prontos para envio direto da sua loja Shopee.</p>
+    <p class="muted">Busca os pedidos com etiqueta já gerada (envios processados, incluindo retirada pelo comprador) direto da sua loja Shopee.</p>
     <form method="post" action="{{ url_for('sync') }}">
       <button type="submit" class="btn-outline">🔄 Sincronizar pedidos</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h3>Dia finalizado</h3>
+    <p class="muted">Confere com a Shopee quais pedidos concluídos já foram coletados pela transportadora e atualiza a lista.</p>
+    <form method="post" action="{{ url_for('dia_finalizado') }}">
+      <button type="submit" class="btn-outline">🌙 Dia finalizado</button>
     </form>
   </div>
 
