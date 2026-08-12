@@ -1,7 +1,28 @@
 {% extends "base.html" %}
-{% block title %}Pendências{% endblock %}
+{% block title %}Produto Pendente{% endblock %}
 {% block content %}
-  <h2>Pedidos com pendência</h2>
+  <h2>Produto Pendente</h2>
+
+  <div class="card">
+    <div class="row" style="justify-content: space-between; align-items: center; margin-top: 0;">
+      <h3 style="margin: 0;">Itens faltando (agregado do dia)</h3>
+      <a href="{{ url_for('missing_products_pdf') }}" class="btn-primary">📄 Baixar PDF</a>
+    </div>
+    {% if not missing_rows %}
+      <p class="muted">Nenhum item faltando no momento 🎉</p>
+    {% else %}
+      <table>
+        <thead><tr><th>Produto</th><th>Variação</th><th>Qtd total</th></tr></thead>
+        <tbody>
+        {% for row in missing_rows %}
+          <tr><td>{{ row.name }}</td><td>{{ row.variation }}</td><td>{{ row.quantity }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+  <h2>Pedidos pendentes</h2>
   {% if not orders %}
     <p class="muted">Nenhuma pendência no momento 🎉</p>
   {% endif %}
