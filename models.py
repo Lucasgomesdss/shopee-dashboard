@@ -44,6 +44,7 @@ def init_db():
                 items_json TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'to_separate',
                 pending_reason TEXT,
+                missing_items_json TEXT,
                 employee_name TEXT,
                 confirmed_at TEXT,
                 created_at TEXT NOT NULL,
@@ -66,6 +67,12 @@ def init_db():
             )
             """
         )
+        # Migração: bancos criados antes do campo missing_items_json existir. Ignora
+        # o erro se a coluna já existir (SQLite não tem "ADD COLUMN IF NOT EXISTS").
+        try:
+            conn.execute("ALTER TABLE orders ADD COLUMN missing_items_json TEXT")
+        except sqlite3.OperationalError:
+            pass
 
 
 def save_shopee_token(shop_id: str, access_token: str, refresh_token: str, expire_in_seconds: int):
@@ -150,7 +157,7 @@ def mark_completed(order_sn: str, employee_name: str):
     with get_conn() as conn:
         conn.execute(
             """UPDATE orders SET status = ?, employee_name = ?, confirmed_at = ?,
-               pending_reason = NULL, updated_at = ? WHERE order_sn = ?""",
+               pending_reason = NULL, missing_items_json = NULL, updated_at = ? WHERE order_sn = ?""",
             (STATUS_COMPLETED, employee_name, now, now, order_sn),
         )
 
@@ -165,12 +172,44 @@ def mark_pending(order_sn: str, employee_name: str, reason: str):
         )
 
 
+def mark_missing_product(order_sn: str, employee_name: str, missing_items: list):
+    """Marca o pedido como pendente por falta de produto, guardando quais itens
+    especificamente faltaram — usado depois pra agregar tudo na aba Produto Pendente
+    e gerar o PDF de busca em massa no estoque."""
+    now = datetime.utcnow().isoformat()
+    names = ", ".join(
+        f"{it['name']} ({it['variation']})" if it.get("variation") and it["variation"] != "-" else it.get("name", "")
+        for it in missing_items
+    )
+    reason = f"Falta produto: {names}" if names else "Falta produto"
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE orders SET status = ?, employee_name = ?, pending_reason = ?,
+               missing_items_json = ?, updated_at = ? WHERE order_sn = ?""",
+            (STATUS_PENDING, employee_name, reason, json.dumps(missing_items), now, order_sn),
+        )
+
+
+def list_missing_items():
+    """Todos os itens marcados como 'faltou' nos pedidos ainda pendentes — usado para
+    montar a lista agregada e o PDF da aba Produto Pendente."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT missing_items_json FROM orders WHERE status = ? AND missing_items_json IS NOT NULL",
+            (STATUS_PENDING,),
+        ).fetchall()
+        all_items = []
+        for r in rows:
+            all_items.extend(json.loads(r["missing_items_json"]))
+        return all_items
+
+
 def reopen(order_sn: str):
     """Volta um pedido pendente para a fila de separação."""
     now = datetime.utcnow().isoformat()
     with get_conn() as conn:
         conn.execute(
-            "UPDATE orders SET status = ?, pending_reason = NULL, updated_at = ? WHERE order_sn = ?",
+            "UPDATE orders SET status = ?, pending_reason = NULL, missing_items_json = NULL, updated_at = ? WHERE order_sn = ?",
             (STATUS_TO_SEPARATE, now, order_sn),
         )
 
