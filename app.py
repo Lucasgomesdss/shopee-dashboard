@@ -189,6 +189,10 @@ def sync():
     Só buscamos PROCESSED (etiqueta já gerada, aguardando despacho) — pedidos ainda em
     READY_TO_SHIP (pagos mas sem etiqueta) não entram na fila de separação.
 
+    Também pulamos pedidos Fulfilled by Shopee (FBS): o estoque desses fica no centro de
+    distribuição da própria Shopee, então o nosso time nunca separa esse pedido fisicamente
+    -- só os pedidos do estoque do vendedor (fulfilled_by_local_seller) entram na fila.
+
     Esse sync é rápido de propósito: só adiciona pedidos novos, não revisa o status de
     pedidos que já estão na fila ou que já foram separados. Essa conferência mais
     pesada (ver com a Shopee quem já foi de fato coletado) fica no botão
@@ -208,6 +212,7 @@ def sync():
     max_pages_per_window = 30  # trava de segurança: até 1500 pedidos por janela
 
     imported = 0
+    skipped_fbs = 0
     oldest = now - lookback_days * 24 * 3600
     window_end = now
     while window_end > oldest:
@@ -228,6 +233,11 @@ def sync():
             if order_sns:
                 details = client.get_order_detail(order_sns).get("response", {}).get("order_list", [])
                 for od in details:
+                    # FBS (Fulfilled by Shopee): o estoque fica no centro de distribuição da
+                    # Shopee, não no nosso -- esse pedido nunca passa pela nossa separação.
+                    if od.get("fulfillment_flag") == "fulfilled_by_shopee":
+                        skipped_fbs += 1
+                        continue
                     items = [
                         {
                             "name": it.get("item_name"),
@@ -263,7 +273,10 @@ def sync():
 
         window_end = window_start
 
-    flash(f"{imported} pedido(s) sincronizado(s) da Shopee.")
+    msg = f"{imported} pedido(s) sincronizado(s) da Shopee."
+    if skipped_fbs:
+        msg += f" {skipped_fbs} pedido(s) Fulfilled by Shopee (estoque da Shopee) ignorado(s) -- não entram na separação."
+    flash(msg)
     return redirect(url_for("dashboard"))
 
 
@@ -281,7 +294,12 @@ def dia_finalizado():
        saíram do status PROCESSED (foram despachados por outro canal, cancelados,
        etc) sem que o time chegasse a bipar -- esses também são arquivados, pra que
        'A separar' não fique cheio de pedidos que na prática já saíram da Shopee.
-       Isso é o que corrige a contagem de A separar ficando maior que a realidade."""
+       Isso é o que corrige a contagem de A separar ficando maior que a realidade.
+
+    3) Também arquiva da fila de A separar/Pendente qualquer pedido Fulfilled by
+       Shopee (FBS) que tenha entrado ali antes dessa checagem existir no /sync --
+       pedido FBS é separado no centro de distribuição da própria Shopee, nunca pelo
+       nosso time, então não deveria contar como 'a separar' aqui."""
     if USE_MOCK_DATA:
         flash("Modo demonstração ativo.")
         return redirect(url_for("dashboard"))
@@ -305,6 +323,7 @@ def dia_finalizado():
                 archived_completed += 1
 
     archived_stale = 0
+    archived_fbs = 0
     open_sns = models.list_open_order_sns(limit=500)
     for i in range(0, len(open_sns), 50):
         batch = open_sns[i:i + 50]
@@ -313,13 +332,17 @@ def dia_finalizado():
         except Exception:
             continue
         for od in details:
-            if od.get("order_status") != "PROCESSED":
+            if od.get("fulfillment_flag") == "fulfilled_by_shopee":
+                models.archive_order(od["order_sn"])
+                archived_fbs += 1
+            elif od.get("order_status") != "PROCESSED":
                 models.archive_order(od["order_sn"])
                 archived_stale += 1
 
     flash(
         f"Dia finalizado: {archived_completed} pedido(s) coletado(s) removido(s) dos concluídos, "
-        f"{archived_stale} pedido(s) que já saíram da Shopee removido(s) da fila de separação."
+        f"{archived_stale} pedido(s) que já saíram da Shopee removido(s) da fila de separação, "
+        f"{archived_fbs} pedido(s) Fulfilled by Shopee (estoque da Shopee) removido(s) da fila de separação."
     )
     return redirect(url_for("dashboard"))
 
