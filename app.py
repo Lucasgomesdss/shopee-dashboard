@@ -8,6 +8,7 @@ from collections import defaultdict
 from flask import Flask, render_template, request, redirect, url_for, flash, send_file, session
 
 import models
+import phrases
 from shopee_client import ShopeeClient
 from pdf_report import build_picking_list_pdf
 
@@ -19,9 +20,9 @@ PARTNER_ID = os.environ.get("SHOPEE_PARTNER_ID")
 PARTNER_KEY = os.environ.get("SHOPEE_PARTNER_KEY")
 USE_MOCK_DATA = os.environ.get("USE_MOCK_DATA", "true").lower() == "true"
 
-# Login dos colaboradores: usuário fixo (SEPARADOR 1/2/3) + senha única, guardada
+# Login dos colaboradores: usuário fixo (nome de cada uma) + senha única, guardada
 # só como variável de ambiente no Render (nunca no código).
-SEPARADOR_USERS = ["SEPARADOR 1", "SEPARADOR 2", "SEPARADOR 3"]
+SEPARADOR_USERS = ["JULIANA", "LUCAS", "RAFAELA", "DANIELA"]
 SEPARADOR_PASSWORD = os.environ.get("SEPARADOR_PASSWORD", "")
 
 models.init_db()
@@ -61,18 +62,27 @@ def get_employee_name():
 
 
 def _aggregate_items(items):
-    """Agrupa uma lista de itens (name, variation, quantity, image_url) somando as
+    """Agrupa uma lista de itens (name, variation, sku, quantity, image_url) somando as
     quantidades por produto/variação — usado tanto na pré-separação quanto no
     Produto Pendente."""
     totals = defaultdict(int)
     images = {}
+    skus = {}
     for it in items:
         key = (it["name"], it["variation"])
         totals[key] += it["quantity"]
         if not images.get(key):
             images[key] = it.get("image_url") or ""
+        if not skus.get(key):
+            skus[key] = it.get("sku") or ""
     return [
-        {"name": name, "variation": variation, "quantity": qty, "image_url": images.get((name, variation), "")}
+        {
+            "name": name,
+            "variation": variation,
+            "quantity": qty,
+            "image_url": images.get((name, variation), ""),
+            "sku": skus.get((name, variation), ""),
+        }
         for (name, variation), qty in sorted(totals.items(), key=lambda kv: (-kv[1], kv[0][0]))
     ]
 
@@ -87,6 +97,13 @@ def inject_sidebar_counts():
     """Deixa os contadores (a separar / falta produto / separados) disponíveis em
     todas as páginas, pra mostrar na barra lateral sem precisar repetir em cada rota."""
     return {"sidebar_counts": models.counts()}
+
+
+@app.context_processor
+def inject_daily_phrase():
+    """Frase motivacional do dia, disponível em todas as páginas (usada na tela de
+    Escanear, que é onde o time passa o dia todo)."""
+    return {"daily_phrase": phrases.get_daily_phrase()}
 
 
 @app.before_request
@@ -162,17 +179,20 @@ def shopee_callback():
 
 @app.route("/sync", methods=["POST"])
 def sync():
-    """Busca pedidos pendentes de separação na Shopee e traz para a fila local.
+    """Busca pedidos com etiqueta já gerada (status PROCESSED = 'envios processados'
+    na Shopee) e traz os novos para a fila de separação local.
 
     A API da Shopee só aceita janelas de até 15 dias por chamada, então varremos os
-    últimos 90 dias em blocos de 15 dias (senão pedidos mais antigos parados na fila
-    ficavam de fora da sincronização). Usamos 'update_time' como referência, porque é
+    últimos dias em blocos de 15 dias. Usamos 'update_time' como referência, porque é
     quando o pedido mudou de status — não quando ele foi criado.
 
-    Buscamos dois status: READY_TO_SHIP (pago, ainda sem etiqueta gerada) e PROCESSED
-    (etiqueta já gerada, aguardando despacho). Como a etiqueta é impressa antes de o
-    pedido ir pro time separar, a maioria dos pedidos chega pra separação já em
-    PROCESSED — se buscássemos só READY_TO_SHIP, ficaria de fora quase tudo."""
+    Só buscamos PROCESSED (etiqueta já gerada, aguardando despacho) — pedidos ainda em
+    READY_TO_SHIP (pagos mas sem etiqueta) não entram na fila de separação.
+
+    Esse sync é rápido de propósito: só adiciona pedidos novos, não revisa o status de
+    pedidos que já estão na fila ou que já foram separados. Essa conferência mais
+    pesada (ver com a Shopee quem já foi de fato coletado) fica no botão
+    'Dia finalizado', pra não deixar a sincronização do dia a dia lenta."""
     if USE_MOCK_DATA:
         flash("Modo demonstração ativo — os pedidos de exemplo já estão carregados.")
         return redirect(url_for("dashboard"))
@@ -185,88 +205,87 @@ def sync():
     now = int(time.time())
     lookback_days = 3
     window_days = 15  # limite máximo da Shopee por chamada
-    max_pages_per_window = 30  # trava de segurança: até 1500 pedidos por janela/status
-    order_statuses = ["READY_TO_SHIP", "PROCESSED"]
+    max_pages_per_window = 30  # trava de segurança: até 1500 pedidos por janela
 
     imported = 0
-    seen_sns = set()  # todo order_sn visto em READY_TO_SHIP/PROCESSED nesta sincronização
     oldest = now - lookback_days * 24 * 3600
-    for status in order_statuses:
-        window_end = now
-        while window_end > oldest:
-            window_start = max(window_end - window_days * 24 * 3600, oldest)
-            cursor = ""
-            for _ in range(max_pages_per_window):
-                resp = client.get_order_list(
-                    window_start, window_end, cursor=cursor,
-                    order_status=status, time_range_field="update_time",
-                )
-                if resp.get("error"):
-                    flash(f"Erro da Shopee ao buscar pedidos ({status}): {resp.get('message') or resp.get('error')}")
-                    return redirect(url_for("dashboard"))
+    window_end = now
+    while window_end > oldest:
+        window_start = max(window_end - window_days * 24 * 3600, oldest)
+        cursor = ""
+        for _ in range(max_pages_per_window):
+            resp = client.get_order_list(
+                window_start, window_end, cursor=cursor,
+                order_status="PROCESSED", time_range_field="update_time",
+            )
+            if resp.get("error"):
+                flash(f"Erro da Shopee ao buscar pedidos: {resp.get('message') or resp.get('error')}")
+                return redirect(url_for("dashboard"))
 
-                response = resp.get("response", {})
-                order_list = response.get("order_list", [])
-                order_sns = [o["order_sn"] for o in order_list]
-                seen_sns.update(order_sns)
-                if order_sns:
-                    details = client.get_order_detail(order_sns).get("response", {}).get("order_list", [])
-                    for od in details:
-                        items = [
-                            {
-                                "name": it.get("item_name"),
-                                "variation": it.get("model_name") or "-",
-                                "quantity": it.get("model_quantity_purchased", 1),
-                                "image_url": (it.get("image_info") or {}).get("image_url", ""),
-                            }
-                            for it in od.get("item_list", [])
-                        ]
-                        tracking = None
-                        packages = od.get("package_list") or []
-                        if packages:
-                            tracking = packages[0].get("tracking_number")
-                        if not tracking and status == "PROCESSED":
-                            # Nem sempre o get_order_detail já traz o rastreio — busca direto
-                            # na API de logística como reforço.
-                            try:
-                                tn_resp = client.get_tracking_number(od["order_sn"])
-                                tracking = tn_resp.get("response", {}).get("tracking_number") or None
-                            except Exception:
-                                tracking = None
-                        models.upsert_order(od["order_sn"], tracking, items)
-                        imported += 1
+            response = resp.get("response", {})
+            order_list = response.get("order_list", [])
+            order_sns = [o["order_sn"] for o in order_list]
+            if order_sns:
+                details = client.get_order_detail(order_sns).get("response", {}).get("order_list", [])
+                for od in details:
+                    items = [
+                        {
+                            "name": it.get("item_name"),
+                            "variation": it.get("model_name") or "-",
+                            "sku": it.get("model_sku") or it.get("item_sku") or "",
+                            "quantity": it.get("model_quantity_purchased", 1),
+                            "image_url": (it.get("image_info") or {}).get("image_url", ""),
+                        }
+                        for it in od.get("item_list", [])
+                    ]
+                    tracking = None
+                    packages = od.get("package_list") or []
+                    if packages:
+                        tracking = packages[0].get("tracking_number")
+                    if not tracking:
+                        # Etiqueta já foi gerada (só buscamos PROCESSED), então o
+                        # rastreio deveria existir — busca direto na API de
+                        # logística como reforço, caso não venha no detalhe.
+                        try:
+                            tn_resp = client.get_tracking_number(od["order_sn"])
+                            tracking = tn_resp.get("response", {}).get("tracking_number") or None
+                        except Exception:
+                            tracking = None
+                    models.upsert_order(od["order_sn"], tracking, items)
+                    imported += 1
 
-                if not response.get("more"):
-                    break
-                next_cursor = response.get("next_cursor", "")
-                if not next_cursor or next_cursor == cursor:
-                    break  # evita loop infinito se a API não avançar o cursor
-                cursor = next_cursor
+            if not response.get("more"):
+                break
+            next_cursor = response.get("next_cursor", "")
+            if not next_cursor or next_cursor == cursor:
+                break  # evita loop infinito se a API não avançar o cursor
+            cursor = next_cursor
 
-            window_end = window_start
+        window_end = window_start
 
-    # Limpeza automática: pedidos que ainda estão na fila local (a separar/pendente)
-    # mas que não apareceram em READY_TO_SHIP/PROCESSED nesta sincronização podem já
-    # ter sido despachados. Confirma direto na Shopee antes de mexer em qualquer coisa,
-    # pra não marcar como concluído por engano (ex: pedido antigo fora da janela de 3 dias).
-    auto_completed = 0
-    local_open = [sn for sn in models.list_open_order_sns() if sn not in seen_sns]
-    for i in range(0, len(local_open), 50):
-        batch = local_open[i:i + 50]
-        try:
-            details = client.get_order_detail(batch).get("response", {}).get("order_list", [])
-        except Exception:
-            continue
-        for od in details:
-            if od.get("order_status") not in ("READY_TO_SHIP", "PROCESSED"):
-                models.mark_auto_completed(od["order_sn"])
-                auto_completed += 1
+    flash(f"{imported} pedido(s) sincronizado(s) da Shopee.")
+    return redirect(url_for("dashboard"))
 
-    # Arquivamento: pedidos que já estão em Concluídos mas que a Shopee confirma que
-    # já foram de fato coletados pela transportadora (status SHIPPED/COMPLETED) saem
-    # da lista e da contagem de Concluídos — ficam só salvos no banco pra histórico.
+
+@app.route("/dia-finalizado", methods=["POST"])
+def dia_finalizado():
+    """Conferência de fim de dia: verifica com a Shopee quais pedidos já marcados como
+    Concluídos (separados) foram de fato coletados pela transportadora (status SHIPPED
+    ou COMPLETED) e os arquiva — somem da lista/contagem de Concluídos, mas continuam
+    salvos no banco pra histórico. Feito sob demanda (não em toda sincronização),
+    porque é uma conferência mais pesada: revisa pedidos que já foram tratados, não só
+    os novos."""
+    if USE_MOCK_DATA:
+        flash("Modo demonstração ativo.")
+        return redirect(url_for("dashboard"))
+
+    client = get_shopee_client()
+    if not client:
+        flash("Nenhuma loja conectada ainda.")
+        return redirect(url_for("dashboard"))
+
     archived = 0
-    completed_sns = models.list_completed_order_sns()
+    completed_sns = models.list_completed_order_sns(limit=500)
     for i in range(0, len(completed_sns), 50):
         batch = completed_sns[i:i + 50]
         try:
@@ -278,31 +297,31 @@ def sync():
                 models.archive_order(od["order_sn"])
                 archived += 1
 
-    msg = f"{imported} pedido(s) sincronizado(s) da Shopee."
-    if auto_completed:
-        msg += f" {auto_completed} pedido(s) marcado(s) como concluído automaticamente (já coletado pela transportadora)."
-    if archived:
-        msg += f" {archived} pedido(s) coletado(s) removido(s) da lista de concluídos."
-    flash(msg)
+    flash(f"Dia finalizado: {archived} pedido(s) coletado(s) removido(s) da lista de concluídos.")
     return redirect(url_for("dashboard"))
 
 
 @app.route("/scan", methods=["GET", "POST"])
 def scan():
+    """Se o pedido bipado já estiver separado (status completed), mostramos ele
+    normalmente -- com foto, título e SKU -- mas com um aviso de 'já separado' e sem
+    os botões de ação, pra colaboradora conseguir conferir de novo sem risco de mudar
+    o status por engano."""
     order = None
     if request.method == "POST":
         tracking = request.form.get("tracking_number", "")
         order = models.find_by_tracking(tracking)
         if not order:
             flash(f"Nenhum pedido encontrado para o código '{tracking}'.")
-        elif order["status"] == models.STATUS_COMPLETED:
-            flash("Este pedido já foi separado e concluído anteriormente.")
-            order = None
     return render_template("scan.html", order=order)
 
 
 @app.route("/order/<order_sn>/complete", methods=["POST"])
 def complete_order(order_sn):
+    order = models.get_order(order_sn)
+    if order and order["status"] == models.STATUS_COMPLETED:
+        flash(f"Pedido {order_sn} já estava separado.")
+        return redirect(url_for("scan"))
     models.mark_completed(order_sn, get_employee_name())
     flash(f"Pedido {order_sn} marcado como concluído.")
     return redirect(url_for("scan"))
@@ -310,6 +329,10 @@ def complete_order(order_sn):
 
 @app.route("/order/<order_sn>/pending", methods=["POST"])
 def pending_order(order_sn):
+    order = models.get_order(order_sn)
+    if order and order["status"] == models.STATUS_COMPLETED:
+        flash(f"Pedido {order_sn} já estava separado.")
+        return redirect(url_for("scan"))
     reason = request.form.get("reason", "").strip() or "Sem detalhes informados"
     models.mark_pending(order_sn, get_employee_name(), reason)
     flash(f"Pedido {order_sn} movido para pendências.")
@@ -324,6 +347,9 @@ def missing_product(order_sn):
     order = models.get_order(order_sn)
     if not order:
         flash(f"Pedido {order_sn} não encontrado.")
+        return redirect(url_for("scan"))
+    if order["status"] == models.STATUS_COMPLETED:
+        flash(f"Pedido {order_sn} já estava separado.")
         return redirect(url_for("scan"))
 
     items = json.loads(order["items_json"])
