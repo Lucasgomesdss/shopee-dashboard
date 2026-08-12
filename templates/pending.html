@@ -12,10 +12,10 @@
       <p class="muted">Nenhum item faltando no momento 🎉</p>
     {% else %}
       <table>
-        <thead><tr><th>Produto</th><th>Variação</th><th>Qtd total</th></tr></thead>
+        <thead><tr><th>Produto</th><th>SKU</th><th>Variação</th><th>Qtd total</th></tr></thead>
         <tbody>
         {% for row in missing_rows %}
-          <tr><td>{{ row.name }}</td><td>{{ row.variation }}</td><td>{{ row.quantity }}</td></tr>
+          <tr><td>{{ row.name }}</td><td>{{ row.sku or "-" }}</td><td>{{ row.variation }}</td><td>{{ row.quantity }}</td></tr>
         {% endfor %}
         </tbody>
       </table>
@@ -32,10 +32,10 @@
       <p class="muted">Rastreio: {{ order.tracking_number }} — por {{ order.employee_name or "?" }}</p>
       <p><strong>Motivo:</strong> {{ order.pending_reason }}</p>
       <table>
-        <thead><tr><th>Produto</th><th>Variação</th><th>Qtd</th></tr></thead>
+        <thead><tr><th>Produto</th><th>SKU</th><th>Variação</th><th>Qtd</th></tr></thead>
         <tbody>
         {% for item in order.items_json | fromjson %}
-          <tr><td>{{ item.name }}</td><td>{{ item.variation }}</td><td>{{ item.quantity }}</td></tr>
+          <tr><td>{{ item.name }}</td><td>{{ item.sku or "-" }}</td><td>{{ item.variation }}</td><td>{{ item.quantity }}</td></tr>
         {% endfor %}
         </tbody>
       </table>
