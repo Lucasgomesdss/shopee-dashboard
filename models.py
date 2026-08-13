@@ -100,17 +100,29 @@ def get_shopee_token():
 
 def upsert_order(order_sn: str, tracking_number: str, items: list):
     """Insere um pedido novo vindo da Shopee. Se já existir, só atualiza os itens/rastreio
-    (não mexe no status para não perder o trabalho já feito pelo time)."""
+    (não mexe no status para não perder o trabalho já feito pelo time) -- EXCETO se ele
+    estava arquivado: quem chama upsert_order (o /sync) só busca pedidos que estão
+    PROCESSED agora, então se um pedido arquivado aparece de novo aqui é porque ele voltou
+    a ter etiqueta válida (ex: etiqueta antiga foi invalidada pela transportadora e a
+    Shopee reemitiu uma nova) -- nesse caso ele "revive" e volta pra fila de A separar,
+    pra não ficar escondido do time."""
     now = datetime.utcnow().isoformat()
     with get_conn() as conn:
         existing = conn.execute(
-            "SELECT order_sn FROM orders WHERE order_sn = ?", (order_sn,)
+            "SELECT order_sn, status FROM orders WHERE order_sn = ?", (order_sn,)
         ).fetchone()
         if existing:
-            conn.execute(
-                "UPDATE orders SET tracking_number = ?, items_json = ?, updated_at = ? WHERE order_sn = ?",
-                (tracking_number, json.dumps(items), now, order_sn),
-            )
+            if existing["status"] == STATUS_ARCHIVED:
+                conn.execute(
+                    """UPDATE orders SET tracking_number = ?, items_json = ?, status = ?,
+                       updated_at = ? WHERE order_sn = ?""",
+                    (tracking_number, json.dumps(items), STATUS_TO_SEPARATE, now, order_sn),
+                )
+            else:
+                conn.execute(
+                    "UPDATE orders SET tracking_number = ?, items_json = ?, updated_at = ? WHERE order_sn = ?",
+                    (tracking_number, json.dumps(items), now, order_sn),
+                )
         else:
             conn.execute(
                 """INSERT INTO orders
@@ -265,4 +277,29 @@ def archive_order(order_sn: str):
         conn.execute(
             "UPDATE orders SET status = ?, updated_at = ? WHERE order_sn = ?",
             (STATUS_ARCHIVED, now, order_sn),
+        )
+
+
+def list_archived_order_sns(limit: int = 500):
+    """order_sn de pedidos arquivados, mais recentes primeiro -- usado no 'Dia
+    finalizado' para verificar se algum deles voltou a ter etiqueta válida (PROCESSED)
+    na Shopee -- por exemplo quando a transportadora invalida uma etiqueta e a Shopee
+    reemite uma nova. Sem essa checagem, o pedido ficava escondido do time pra sempre,
+    mesmo precisando ser separado de novo."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT order_sn FROM orders WHERE status = ? ORDER BY updated_at DESC LIMIT ?",
+            (STATUS_ARCHIVED, limit),
+        ).fetchall()
+        return [r["order_sn"] for r in rows]
+
+
+def revive_order(order_sn: str):
+    """Traz um pedido arquivado de volta pra fila de A separar -- usado quando o 'Dia
+    finalizado' descobre que ele voltou a ter etiqueta válida (PROCESSED) na Shopee."""
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE orders SET status = ?, updated_at = ? WHERE order_sn = ?",
+            (STATUS_TO_SEPARATE, now, order_sn),
         )
