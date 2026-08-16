@@ -286,9 +286,13 @@ def dia_finalizado():
     toda sincronização):
 
     1) Verifica com a Shopee quais pedidos já marcados como Concluídos (separados)
-       foram de fato coletados pela transportadora (status SHIPPED ou COMPLETED) e os
-       arquiva — somem da lista/contagem de Concluídos, mas continuam salvos no banco
-       pra histórico.
+       deixaram de estar com etiqueta ativa (PROCESSED) -- seja porque a transportadora
+       já coletou (SHIPPED/COMPLETED/TO_CONFIRM_RECEIVE), seja porque o pedido foi
+       CANCELADO depois que o time já tinha separado -- e os arquiva, além de qualquer
+       pedido Fulfilled by Shopee que tenha ficado marcado como concluído por engano.
+       Somem da lista/contagem de Concluídos, mas continuam salvos no banco pra
+       histórico. Antes só verificava SHIPPED/COMPLETED, então pedidos cancelados
+       ficavam presos em Concluídos pra sempre.
 
     2) Verifica com a Shopee os pedidos que ainda estão em A separar/Pendente e já
        saíram do status PROCESSED (foram despachados por outro canal, cancelados,
@@ -299,7 +303,14 @@ def dia_finalizado():
     3) Também arquiva da fila de A separar/Pendente qualquer pedido Fulfilled by
        Shopee (FBS) que tenha entrado ali antes dessa checagem existir no /sync --
        pedido FBS é separado no centro de distribuição da própria Shopee, nunca pelo
-       nosso time, então não deveria contar como 'a separar' aqui."""
+       nosso time, então não deveria contar como 'a separar' aqui.
+
+    4) Verifica os pedidos arquivados e traz de volta pra A separar qualquer um que
+       tenha voltado a ter etiqueta válida (PROCESSED) na Shopee -- acontece quando a
+       transportadora invalida uma etiqueta (ex: peso/medida divergente) e a Shopee
+       reemite uma nova. Sem essa checagem o pedido ficava escondido do time pra
+       sempre mesmo precisando ser separado de novo -- foi o que causou a divergência
+       de '310 pedidos com etiqueta pronta na Shopee vs 188 no dashboard'."""
     if USE_MOCK_DATA:
         flash("Modo demonstração ativo.")
         return redirect(url_for("dashboard"))
@@ -318,7 +329,7 @@ def dia_finalizado():
         except Exception:
             continue
         for od in details:
-            if od.get("order_status") in ("SHIPPED", "COMPLETED"):
+            if od.get("order_status") != "PROCESSED" or od.get("fulfillment_flag") == "fulfilled_by_shopee":
                 models.archive_order(od["order_sn"])
                 archived_completed += 1
 
@@ -339,10 +350,27 @@ def dia_finalizado():
                 models.archive_order(od["order_sn"])
                 archived_stale += 1
 
+    revived = 0
+    archived_sns = models.list_archived_order_sns(limit=500)
+    for i in range(0, len(archived_sns), 50):
+        batch = archived_sns[i:i + 50]
+        try:
+            details = client.get_order_detail(batch).get("response", {}).get("order_list", [])
+        except Exception:
+            continue
+        for od in details:
+            if (
+                od.get("order_status") == "PROCESSED"
+                and od.get("fulfillment_flag") != "fulfilled_by_shopee"
+            ):
+                models.revive_order(od["order_sn"])
+                revived += 1
+
     flash(
         f"Dia finalizado: {archived_completed} pedido(s) coletado(s) removido(s) dos concluídos, "
         f"{archived_stale} pedido(s) que já saíram da Shopee removido(s) da fila de separação, "
-        f"{archived_fbs} pedido(s) Fulfilled by Shopee (estoque da Shopee) removido(s) da fila de separação."
+        f"{archived_fbs} pedido(s) Fulfilled by Shopee (estoque da Shopee) removido(s) da fila de separação, "
+        f"{revived} pedido(s) que voltaram a ter etiqueta válida trazido(s) de volta pra A separar."
     )
     return redirect(url_for("dashboard"))
 
