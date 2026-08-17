@@ -132,6 +132,31 @@ def upsert_order(order_sn: str, tracking_number: str, items: list):
             )
 
 
+def filter_needs_sync(order_sns: list):
+    """Recebe order_sn de pedidos que a Shopee ainda mostra como PROCESSED e devolve só os
+    que realmente precisam de uma chamada get_order_detail (+ eventual fallback de rastreio):
+    os que ainda não conhecemos, os que estão arquivados (podem estar "revivendo") ou os que
+    por algum motivo ainda não têm rastreio salvo. Pedido já conhecido, não arquivado e com
+    rastreio salvo não muda de conteúdo enquanto continuar PROCESSED -- pular ele evita bater
+    na Shopee de novo pra fila inteira a cada sincronização. Isso é o que fazia o /sync
+    estourar o timeout do servidor: uma loja com centenas de pedidos PROCESSED por dia batia
+    na API pra todos eles a cada clique em 'Sincronizar', mesmo os que já tinham sido
+    sincronizados antes."""
+    if not order_sns:
+        return []
+    with get_conn() as conn:
+        placeholders = ",".join("?" for _ in order_sns)
+        rows = conn.execute(
+            f"SELECT order_sn, status, tracking_number FROM orders WHERE order_sn IN ({placeholders})",
+            order_sns,
+        ).fetchall()
+        known = {r["order_sn"]: r for r in rows}
+    return [
+        sn for sn in order_sns
+        if sn not in known or known[sn]["status"] == STATUS_ARCHIVED or not known[sn]["tracking_number"]
+    ]
+
+
 def find_by_tracking(tracking_number: str):
     with get_conn() as conn:
         row = conn.execute(
