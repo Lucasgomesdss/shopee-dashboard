@@ -193,9 +193,13 @@ def sync():
     distribuição da própria Shopee, então o nosso time nunca separa esse pedido fisicamente
     -- só os pedidos do estoque do vendedor (fulfilled_by_local_seller) entram na fila.
 
-    Esse sync é rápido de propósito: só adiciona pedidos novos, não revisa o status de
-    pedidos que já estão na fila ou que já foram separados. Essa conferência mais
-    pesada (ver com a Shopee quem já foi de fato coletado) fica no botão
+    Esse sync é rápido de propósito: só busca detalhe/rastreio na Shopee dos pedidos que
+    ainda não conhecemos (ou que estão arquivados/sem rastreio salvo) -- pedidos já
+    sincronizados antes não são reconsultados, já que o conteúdo deles não muda enquanto
+    continuam PROCESSED. Sem esse filtro, uma loja com centenas de pedidos PROCESSED por
+    dia batia na Shopee pra fila inteira a cada clique em Sincronizar (get_order_detail +
+    fallback de rastreio pedido por pedido), o que estourava o timeout do servidor. Essa
+    conferência mais pesada (ver com a Shopee quem já foi de fato coletado) fica no botão
     'Dia finalizado', pra não deixar a sincronização do dia a dia lenta."""
     if USE_MOCK_DATA:
         flash("Modo demonstração ativo — os pedidos de exemplo já estão carregados.")
@@ -213,6 +217,7 @@ def sync():
 
     imported = 0
     skipped_fbs = 0
+    skipped_up_to_date = 0
     oldest = now - lookback_days * 24 * 3600
     window_end = now
     while window_end > oldest:
@@ -222,6 +227,7 @@ def sync():
             resp = client.get_order_list(
                 window_start, window_end, cursor=cursor,
                 order_status="PROCESSED", time_range_field="update_time",
+                page_size=100,
             )
             if resp.get("error"):
                 flash(f"Erro da Shopee ao buscar pedidos: {resp.get('message') or resp.get('error')}")
@@ -230,8 +236,17 @@ def sync():
             response = resp.get("response", {})
             order_list = response.get("order_list", [])
             order_sns = [o["order_sn"] for o in order_list]
-            if order_sns:
-                details = client.get_order_detail(order_sns).get("response", {}).get("order_list", [])
+
+            # Só busca detalhe/rastreio dos que realmente precisam (novos, arquivados ou
+            # sem rastreio salvo) -- pedidos já sincronizados antes não mudam de conteúdo
+            # enquanto continuam PROCESSED, então pular eles evita bater na Shopee de novo
+            # pra fila inteira a cada sincronização.
+            to_refresh = models.filter_needs_sync(order_sns)
+            skipped_up_to_date += len(order_sns) - len(to_refresh)
+
+            for i in range(0, len(to_refresh), 50):
+                batch = to_refresh[i:i + 50]
+                details = client.get_order_detail(batch).get("response", {}).get("order_list", [])
                 for od in details:
                     # FBS (Fulfilled by Shopee): o estoque fica no centro de distribuição da
                     # Shopee, não no nosso -- esse pedido nunca passa pela nossa separação.
@@ -276,6 +291,8 @@ def sync():
     msg = f"{imported} pedido(s) sincronizado(s) da Shopee."
     if skipped_fbs:
         msg += f" {skipped_fbs} pedido(s) Fulfilled by Shopee (estoque da Shopee) ignorado(s) -- não entram na separação."
+    if skipped_up_to_date:
+        msg += f" {skipped_up_to_date} pedido(s) já estavam sincronizados e foram pulados."
     flash(msg)
     return redirect(url_for("dashboard"))
 
