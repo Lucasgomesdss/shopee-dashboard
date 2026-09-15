@@ -463,6 +463,13 @@ def reopen_order(order_sn):
     return redirect(url_for("pending_tab"))
 
 
+@app.route("/a-separar")
+def open_tab():
+    """Lista os pedidos que ainda estao esperando pra ser separados (bipados) -- e a mesma fila que aparece no contador 'A separar' da barra lateral."""
+    orders = models.list_by_status(models.STATUS_TO_SEPARATE)
+    return render_template("open.html", orders=orders)
+
+
 @app.route("/pendencias")
 def pending_tab():
     orders = models.list_by_status(models.STATUS_PENDING)

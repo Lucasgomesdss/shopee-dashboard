@@ -10,6 +10,7 @@
   <header>
     <a class="brand" href="{{ url_for('dashboard') }}">📦 Separação de Pedidos</a>
     <nav>
+      <a href="{{ url_for('open_tab') }}">A separar</a>
       <a href="{{ url_for('scan') }}">Escanear</a>
       <a href="{{ url_for('pending_tab') }}">Produto Pendente</a>
       <a href="{{ url_for('completed_tab') }}">Concluídos</a>
@@ -18,10 +19,10 @@
   </header>
   <div class="layout">
     <aside class="sidebar">
-      <div class="sidebar-stat to_separate">
+      <a class="sidebar-stat to_separate" href="{{ url_for('open_tab') }}">
         <span class="n">{{ sidebar_counts.to_separate }}</span>
         <span class="label">A separar</span>
-      </div>
+      </a>
       <div class="sidebar-stat pending">
         <span class="n">{{ sidebar_counts.pending }}</span>
         <span class="label">Falta produto</span>

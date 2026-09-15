@@ -47,6 +47,9 @@ nav { display: flex; gap: 16px; flex-wrap: wrap; }
 .sidebar-stat {
   background: white;
   border-radius: 12px;
+    text-decoration: none;
+    color: inherit;
+    display: block;
   padding: 16px;
   text-align: center;
   box-shadow: 0 1px 3px rgba(0,0,0,0.08);
@@ -110,6 +113,7 @@ th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eee; }
 th { color: #666; font-size: 0.85rem; text-transform: uppercase; }
 .flash { background: #fff3cd; border: 1px solid #ffe08a; padding: 12px; border-radius: 8px; margin-bottom: 16px; }
 .tag { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 700; }
+.tag.to_separate { background: #ffe9e3; color: var(--shopee); }
 .tag.pending { background: #fff1de; color: var(--warn); }
 .tag.completed { background: #e5f7ec; color: var(--ok); }
 .muted { color: #888; font-size: 0.85rem; }
