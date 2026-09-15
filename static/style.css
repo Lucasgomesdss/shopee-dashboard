@@ -205,3 +205,23 @@ form.inline { display: inline; }
   font-weight: 700;
   margin: 10px 0;
 }
+
+.item-photo-sm {
+    width: 48px;
+    height: 48px;
+    border-radius: 8px;
+    object-fit: cover;
+    border: 1px solid #eee;
+    flex-shrink: 0;
+    display: block;
+}
+.item-photo-placeholder-sm {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f0f0f0;
+    color: #999;
+    font-size: 0.55rem;
+    text-align: center;
+    line-height: 1.1;
+}

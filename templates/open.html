@@ -10,10 +10,10 @@
 <h3>{{ order.order_sn }} <span class="tag to_separate">a separar</span></h3>
 <p class="muted">Rastreio: {{ order.tracking_number or "-" }}</p>
 <table>
-<thead><tr><th>Produto</th><th>SKU</th><th>Variação</th><th>Qtd</th></tr></thead>
+<thead><tr><th>Foto</th><th>Produto</th><th>SKU</th><th>Variação</th><th>Qtd</th></tr></thead>
 <tbody>
 {% for item in order.items_json | fromjson %}
-<tr><td>{{ item.name }}</td><td>{{ item.sku or "-" }}</td><td>{{ item.variation }}</td><td>{{ item.quantity }}</td></tr>
+<tr><td>{% if item.image_url %}<img src="{{ item.image_url }}" alt="{{ item.name }}" class="item-photo-sm" loading="lazy">{% else %}<div class="item-photo-sm item-photo-placeholder-sm">Sem foto</div>{% endif %}</td><td>{{ item.name }}</td><td>{{ item.sku or "-" }}</td><td>{{ item.variation }}</td><td>{{ item.quantity }}</td></tr>
 {% endfor %}
 </tbody>
 </table>
