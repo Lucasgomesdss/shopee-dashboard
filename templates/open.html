@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}A separar{% endblock %}
+{% block content %}
+<h2>Pedidos a separar</h2>
+{% if not orders %}
+<p class="muted">Nenhum pedido esperando separação no momento 🎉</p>
+{% endif %}
+{% for order in orders %}
+<div class="card">
+<h3>{{ order.order_sn }} <span class="tag to_separate">a separar</span></h3>
+<p class="muted">Rastreio: {{ order.tracking_number or "-" }}</p>
+<table>
+<thead><tr><th>Produto</th><th>SKU</th><th>Variação</th><th>Qtd</th></tr></thead>
+<tbody>
+{% for item in order.items_json | fromjson %}
+<tr><td>{{ item.name }}</td><td>{{ item.sku or "-" }}</td><td>{{ item.variation }}</td><td>{{ item.quantity }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% endfor %}
+{% endblock %}
