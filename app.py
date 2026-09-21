@@ -501,5 +501,35 @@ def missing_products_pdf():
     return send_file(pdf_buffer, mimetype="application/pdf", as_attachment=True, download_name=filename)
 
 
+@app.route("/debug/envio-info")
+def debug_envio_info():
+    if USE_MOCK_DATA:
+        return "Modo demo ativo, sem dados reais da Shopee."
+    client = get_shopee_client()
+    if not client:
+        return "Loja nao autorizada com a Shopee."
+    orders = models.list_by_status(models.STATUS_TO_SEPARATE)
+    order_sns = [o["order_sn"] for o in orders]
+    rows = []
+    for i in range(0, len(order_sns), 50):
+        batch = order_sns[i:i + 50]
+        details = client.get_order_detail(batch).get("response", {}).get("order_list", [])
+        for od in details:
+            rows.append(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+                    od.get("order_sn", ""),
+                    od.get("shipping_carrier", ""),
+                    od.get("cod", ""),
+                    od.get("fulfillment_flag", ""),
+                )
+            )
+    html = (
+        "<h2>Envio dos pedidos a separar ({} pedidos)</h2>"
+        "<table border=1 cellpadding=6><tr><th>Pedido</th><th>Transportadora</th>"
+        "<th>COD</th><th>Fulfillment</th></tr>{}</table>"
+    ).format(len(rows), "".join(rows))
+    return html
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
