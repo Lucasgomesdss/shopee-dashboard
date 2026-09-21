@@ -56,6 +56,9 @@ def init_db():
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tracking ON orders(tracking_number)"
         )
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
+        if "shipping_carrier" not in cols:
+            conn.execute("ALTER TABLE orders ADD COLUMN shipping_carrier TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS shopee_tokens (
@@ -98,7 +101,7 @@ def get_shopee_token():
         return dict(row) if row else None
 
 
-def upsert_order(order_sn: str, tracking_number: str, items: list):
+def upsert_order(order_sn: str, tracking_number: str, items: list, shipping_carrier: str = None):
     """Insere um pedido novo vindo da Shopee. Se já existir, só atualiza os itens/rastreio
     (não mexe no status para não perder o trabalho já feito pelo time) -- EXCETO se ele
     estava arquivado: quem chama upsert_order (o /sync) só busca pedidos que estão
@@ -115,20 +118,20 @@ def upsert_order(order_sn: str, tracking_number: str, items: list):
             if existing["status"] == STATUS_ARCHIVED:
                 conn.execute(
                     """UPDATE orders SET tracking_number = ?, items_json = ?, status = ?,
-                       updated_at = ? WHERE order_sn = ?""",
-                    (tracking_number, json.dumps(items), STATUS_TO_SEPARATE, now, order_sn),
+                       shipping_carrier = ?, updated_at = ? WHERE order_sn = ?""",
+                    (tracking_number, json.dumps(items), STATUS_TO_SEPARATE, shipping_carrier, now, order_sn),
                 )
             else:
                 conn.execute(
-                    "UPDATE orders SET tracking_number = ?, items_json = ?, updated_at = ? WHERE order_sn = ?",
-                    (tracking_number, json.dumps(items), now, order_sn),
+                    "UPDATE orders SET tracking_number = ?, items_json = ?, shipping_carrier = ?, updated_at = ? WHERE order_sn = ?",
+                    (tracking_number, json.dumps(items), shipping_carrier, now, order_sn),
                 )
         else:
             conn.execute(
                 """INSERT INTO orders
-                   (order_sn, tracking_number, items_json, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (order_sn, tracking_number, json.dumps(items), STATUS_TO_SEPARATE, now, now),
+                   (order_sn, tracking_number, items_json, status, shipping_carrier, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (order_sn, tracking_number, json.dumps(items), STATUS_TO_SEPARATE, shipping_carrier, now, now),
             )
 
 
