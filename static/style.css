@@ -116,6 +116,7 @@ th { color: #666; font-size: 0.85rem; text-transform: uppercase; }
 .tag.to_separate { background: #ffe9e3; color: var(--shopee); }
 .tag.pending { background: #fff1de; color: var(--warn); }
 .tag.completed { background: #e5f7ec; color: var(--ok); }
+.tag.pickup { background: #e3edff; color: #1d4ed8; }
 .muted { color: #888; font-size: 0.85rem; }
 form.inline { display: inline; }
 
