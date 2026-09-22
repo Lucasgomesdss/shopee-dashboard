@@ -7,7 +7,7 @@
 {% endif %}
 {% for order in orders %}
 <div class="card">
-<h3>{{ order.order_sn }} <span class="tag to_separate">a separar</span></h3>
+<h3>{{ order.order_sn }} <span class="tag to_separate">a separar</span>{% if order.shipping_carrier and "retirada" in order.shipping_carrier|lower %} <span class="tag pickup">retirada pelo comprador</span>{% endif %}</h3>
 <p class="muted">Rastreio: {{ order.tracking_number or "-" }}</p>
 <table>
 <thead><tr><th>Foto</th><th>Produto</th><th>SKU</th><th>Variação</th><th>Qtd</th></tr></thead>
@@ -17,6 +17,11 @@
 {% endfor %}
 </tbody>
 </table>
+{% if order.shipping_carrier and "retirada" in order.shipping_carrier|lower %}
+<form method="post" action="{{ url_for('complete_order', order_sn=order.order_sn) }}" onsubmit="return confirm('Confirmar que o comprador já retirou este pedido?');">
+<button type="submit" class="btn btn-ok btn-sm">Marcar como retirado</button>
+</form>
+{% endif %}
 </div>
 {% endfor %}
 {% endblock %}

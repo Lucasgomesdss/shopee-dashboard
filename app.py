@@ -276,7 +276,8 @@ def sync():
                             tracking = tn_resp.get("response", {}).get("tracking_number") or None
                         except Exception:
                             tracking = None
-                    models.upsert_order(od["order_sn"], tracking, items)
+                    shipping_carrier = od.get("shipping_carrier") or None
+                    models.upsert_order(od["order_sn"], tracking, items, shipping_carrier)
                     imported += 1
 
             if not response.get("more"):
@@ -412,10 +413,10 @@ def complete_order(order_sn):
     order = models.get_order(order_sn)
     if order and order["status"] == models.STATUS_COMPLETED:
         flash(f"Pedido {order_sn} já estava separado.")
-        return redirect(url_for("scan"))
+        return redirect(request.referrer or url_for("scan"))
     models.mark_completed(order_sn, get_employee_name())
     flash(f"Pedido {order_sn} marcado como concluído.")
-    return redirect(url_for("scan"))
+    return redirect(request.referrer or url_for("scan"))
 
 
 @app.route("/order/<order_sn>/pending", methods=["POST"])
@@ -499,36 +500,6 @@ def missing_products_pdf():
     )
     filename = f"produto-pendente-{datetime.now().strftime('%Y%m%d-%H%M')}.pdf"
     return send_file(pdf_buffer, mimetype="application/pdf", as_attachment=True, download_name=filename)
-
-
-@app.route("/debug/envio-info")
-def debug_envio_info():
-    if USE_MOCK_DATA:
-        return "Modo demo ativo, sem dados reais da Shopee."
-    client = get_shopee_client()
-    if not client:
-        return "Loja nao autorizada com a Shopee."
-    orders = models.list_by_status(models.STATUS_TO_SEPARATE)
-    order_sns = [o["order_sn"] for o in orders]
-    rows = []
-    for i in range(0, len(order_sns), 50):
-        batch = order_sns[i:i + 50]
-        details = client.get_order_detail(batch).get("response", {}).get("order_list", [])
-        for od in details:
-            rows.append(
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
-                    od.get("order_sn", ""),
-                    od.get("shipping_carrier", ""),
-                    od.get("cod", ""),
-                    od.get("fulfillment_flag", ""),
-                )
-            )
-    html = (
-        "<h2>Envio dos pedidos a separar ({} pedidos)</h2>"
-        "<table border=1 cellpadding=6><tr><th>Pedido</th><th>Transportadora</th>"
-        "<th>COD</th><th>Fulfillment</th></tr>{}</table>"
-    ).format(len(rows), "".join(rows))
-    return html
 
 
 if __name__ == "__main__":
