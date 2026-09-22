@@ -502,6 +502,15 @@ def missing_products_pdf():
     return send_file(pdf_buffer, mimetype="application/pdf", as_attachment=True, download_name=filename)
 
 
+@app.route("/debug/raw-order/<order_sn>")
+def debug_raw_order(order_sn):
+    client = get_shopee_client()
+    if not client:
+        return jsonify({"error": "no client/token"})
+    detail = client.get_order_detail([order_sn])
+    return jsonify(detail)
+
+
 @app.route("/debug/check-pickup")
 def debug_check_pickup():
     rows = models.list_by_status(models.STATUS_TO_SEPARATE)
