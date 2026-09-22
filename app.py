@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from io import BytesIO
 from collections import defaultdict
 
-from flask import Flask, render_template, request, redirect, url_for, flash, send_file, session
+from flask import Flask, render_template, request, redirect, url_for, flash, send_file, session, jsonify
 
 import models
 import phrases
@@ -500,6 +500,20 @@ def missing_products_pdf():
     )
     filename = f"produto-pendente-{datetime.now().strftime('%Y%m%d-%H%M')}.pdf"
     return send_file(pdf_buffer, mimetype="application/pdf", as_attachment=True, download_name=filename)
+
+
+@app.route("/debug/check-pickup")
+def debug_check_pickup():
+    rows = models.list_by_status(models.STATUS_TO_SEPARATE)
+    data = [
+        {
+            "order_sn": r["order_sn"],
+            "tracking_number": r["tracking_number"],
+            "shipping_carrier": r["shipping_carrier"],
+        }
+        for r in rows
+    ]
+    return jsonify(data)
 
 
 if __name__ == "__main__":
