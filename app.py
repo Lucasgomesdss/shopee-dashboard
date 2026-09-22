@@ -511,42 +511,5 @@ def missing_products_pdf():
     return send_file(pdf_buffer, mimetype="application/pdf", as_attachment=True, download_name=filename)
 
 
-@app.route("/debug/repair-one/<order_sn>")
-def debug_repair_one(order_sn):
-    client = get_shopee_client()
-    if not client:
-        return jsonify({"error": "no client/token"})
-    detail = client.get_order_detail([order_sn])
-    details = detail.get("response", {}).get("order_list", [])
-    if not details:
-        return jsonify({"error": "order not found on Shopee"})
-    od = details[0]
-    items = [
-        {
-            "name": it.get("item_name"),
-            "variation": it.get("model_name") or "-",
-            "sku": it.get("model_sku") or it.get("item_sku") or "",
-            "quantity": it.get("model_quantity_purchased", 1),
-            "image_url": (it.get("image_info") or {}).get("image_url", ""),
-        }
-        for it in od.get("item_list", [])
-    ]
-    tracking = None
-    packages = od.get("package_list") or []
-    if packages:
-        tracking = packages[0].get("tracking_number")
-    if not tracking:
-        try:
-            tn_resp = client.get_tracking_number(order_sn)
-            tracking = tn_resp.get("response", {}).get("tracking_number") or None
-        except Exception:
-            tracking = None
-    if tracking and "SPXLM" in tracking:
-        tracking = tracking.split("SPXLM")[0]
-    shipping_carrier = od.get("shipping_carrier") or None
-    models.upsert_order(od["order_sn"], tracking, items, shipping_carrier)
-    return jsonify({"order_sn": order_sn, "tracking": tracking, "shipping_carrier": shipping_carrier, "items": items})
-
-
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
