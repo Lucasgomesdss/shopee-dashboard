@@ -536,5 +536,44 @@ def debug_list_processed():
     })
 
 
+@app.route("/debug/sync-one/<order_sn>")
+def debug_sync_one(order_sn):
+    client = get_shopee_client()
+    if not client:
+        return jsonify({"error": "no client/token"})
+    steps = {}
+    try:
+        detail_resp = client.get_order_detail([order_sn])
+        steps["detail_resp_error"] = detail_resp.get("error")
+        details = detail_resp.get("response", {}).get("order_list", [])
+        steps["detail_count"] = len(details)
+        if not details:
+            return jsonify(steps)
+        od = details[0]
+        steps["fulfillment_flag"] = od.get("fulfillment_flag")
+        packages = od.get("package_list") or []
+        steps["packages"] = packages
+        tracking = None
+        if packages:
+            tracking = packages[0].get("tracking_number")
+        steps["tracking_from_package_list"] = tracking
+        if not tracking:
+            try:
+                tn_resp = client.get_tracking_number(order_sn)
+                steps["tn_resp"] = tn_resp
+                tracking = tn_resp.get("response", {}).get("tracking_number") or None
+            except Exception as e:
+                steps["tn_exception"] = str(e)
+                tracking = None
+        steps["final_tracking"] = tracking
+        shipping_carrier = od.get("shipping_carrier") or None
+        steps["shipping_carrier"] = shipping_carrier
+        models.upsert_order(od["order_sn"], tracking, [], shipping_carrier)
+        steps["upsert_ok"] = True
+    except Exception as e:
+        steps["top_level_exception"] = str(e)
+    return jsonify(steps)
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
