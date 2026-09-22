@@ -276,6 +276,15 @@ def sync():
                             tracking = tn_resp.get("response", {}).get("tracking_number") or None
                         except Exception:
                             tracking = None
+                    if tracking and "SPXLM" in tracking:
+                        # Pedidos de retirada via ponto SPX Locker vêm com o código de
+                        # rastreio real (o que está impresso na etiqueta e o que o time
+                        # bipa) concatenado sem separador com uma referência interna do
+                        # locker, tipo "BR2679118948493SPXLM16968876". Cortamos no
+                        # marcador pra guardar só o código real -- senão o /scan nunca
+                        # encontra o pedido, porque o rastreio bipado nunca bate com o
+                        # valor salvo (que tinha o sufixo extra).
+                        tracking = tracking.split("SPXLM")[0]
                     shipping_carrier = od.get("shipping_carrier") or None
                     models.upsert_order(od["order_sn"], tracking, items, shipping_carrier)
                     imported += 1
@@ -502,77 +511,41 @@ def missing_products_pdf():
     return send_file(pdf_buffer, mimetype="application/pdf", as_attachment=True, download_name=filename)
 
 
-@app.route("/debug/raw-order/<order_sn>")
-def debug_raw_order(order_sn):
+@app.route("/debug/repair-one/<order_sn>")
+def debug_repair_one(order_sn):
     client = get_shopee_client()
     if not client:
         return jsonify({"error": "no client/token"})
     detail = client.get_order_detail([order_sn])
-    return jsonify(detail)
-
-
-@app.route("/debug/list-processed")
-def debug_list_processed():
-    client = get_shopee_client()
-    if not client:
-        return jsonify({"error": "no client/token"})
-    now = int(time.time())
-    window_start = now - 3 * 24 * 3600
-    resp = client.get_order_list(
-        window_start, now, cursor="",
-        order_status="PROCESSED", time_range_field="update_time",
-        page_size=100,
-    )
-    response = resp.get("response", {})
-    order_list = response.get("order_list", [])
-    order_sns = [o["order_sn"] for o in order_list]
-    return jsonify({
-        "count": len(order_sns),
-        "has_more": response.get("more"),
-        "target_present": "260922MJS3XR5T" in order_sns,
-        "order_sns": order_sns,
-        "raw_error": resp.get("error"),
-        "raw_message": resp.get("message"),
-    })
-
-
-@app.route("/debug/sync-one/<order_sn>")
-def debug_sync_one(order_sn):
-    client = get_shopee_client()
-    if not client:
-        return jsonify({"error": "no client/token"})
-    steps = {}
-    try:
-        detail_resp = client.get_order_detail([order_sn])
-        steps["detail_resp_error"] = detail_resp.get("error")
-        details = detail_resp.get("response", {}).get("order_list", [])
-        steps["detail_count"] = len(details)
-        if not details:
-            return jsonify(steps)
-        od = details[0]
-        steps["fulfillment_flag"] = od.get("fulfillment_flag")
-        packages = od.get("package_list") or []
-        steps["packages"] = packages
-        tracking = None
-        if packages:
-            tracking = packages[0].get("tracking_number")
-        steps["tracking_from_package_list"] = tracking
-        if not tracking:
-            try:
-                tn_resp = client.get_tracking_number(order_sn)
-                steps["tn_resp"] = tn_resp
-                tracking = tn_resp.get("response", {}).get("tracking_number") or None
-            except Exception as e:
-                steps["tn_exception"] = str(e)
-                tracking = None
-        steps["final_tracking"] = tracking
-        shipping_carrier = od.get("shipping_carrier") or None
-        steps["shipping_carrier"] = shipping_carrier
-        models.upsert_order(od["order_sn"], tracking, [], shipping_carrier)
-        steps["upsert_ok"] = True
-    except Exception as e:
-        steps["top_level_exception"] = str(e)
-    return jsonify(steps)
+    details = detail.get("response", {}).get("order_list", [])
+    if not details:
+        return jsonify({"error": "order not found on Shopee"})
+    od = details[0]
+    items = [
+        {
+            "name": it.get("item_name"),
+            "variation": it.get("model_name") or "-",
+            "sku": it.get("model_sku") or it.get("item_sku") or "",
+            "quantity": it.get("model_quantity_purchased", 1),
+            "image_url": (it.get("image_info") or {}).get("image_url", ""),
+        }
+        for it in od.get("item_list", [])
+    ]
+    tracking = None
+    packages = od.get("package_list") or []
+    if packages:
+        tracking = packages[0].get("tracking_number")
+    if not tracking:
+        try:
+            tn_resp = client.get_tracking_number(order_sn)
+            tracking = tn_resp.get("response", {}).get("tracking_number") or None
+        except Exception:
+            tracking = None
+    if tracking and "SPXLM" in tracking:
+        tracking = tracking.split("SPXLM")[0]
+    shipping_carrier = od.get("shipping_carrier") or None
+    models.upsert_order(od["order_sn"], tracking, items, shipping_carrier)
+    return jsonify({"order_sn": order_sn, "tracking": tracking, "shipping_carrier": shipping_carrier, "items": items})
 
 
 if __name__ == "__main__":
