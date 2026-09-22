@@ -511,5 +511,30 @@ def debug_raw_order(order_sn):
     return jsonify(detail)
 
 
+@app.route("/debug/list-processed")
+def debug_list_processed():
+    client = get_shopee_client()
+    if not client:
+        return jsonify({"error": "no client/token"})
+    now = int(time.time())
+    window_start = now - 3 * 24 * 3600
+    resp = client.get_order_list(
+        window_start, now, cursor="",
+        order_status="PROCESSED", time_range_field="update_time",
+        page_size=100,
+    )
+    response = resp.get("response", {})
+    order_list = response.get("order_list", [])
+    order_sns = [o["order_sn"] for o in order_list]
+    return jsonify({
+        "count": len(order_sns),
+        "has_more": response.get("more"),
+        "target_present": "260922MJS3XR5T" in order_sns,
+        "order_sns": order_sns,
+        "raw_error": resp.get("error"),
+        "raw_message": resp.get("message"),
+    })
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
