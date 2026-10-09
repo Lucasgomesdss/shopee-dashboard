@@ -14,12 +14,12 @@
       <a href="{{ url_for('scan') }}">Escanear</a>
       <a href="{{ url_for('pending_tab') }}">Produto Pendente</a>
       <a href="{{ url_for('completed_tab') }}">Concluídos</a>
-      <a href="{{ url_for('lotes.painel') }}">Lotes</a>
+      <a href="{{ url_for('lotes.painel') }}" style="background:#1a73e8;color:#fff;padding:6px 16px;border-radius:8px;font-weight:700;letter-spacing:.5px">ETIQUETAS</a>
       {% if employee_name %}<span style="opacity:.85">| {{ employee_name }}</span> <a href="{{ url_for('logout') }}">Sair</a>{% endif %}
     </nav>
   </header>
   <div class="layout">
-    <aside class="sidebar">
+    {% block sidebar %}<aside class="sidebar">
       <a class="sidebar-stat to_separate" href="{{ url_for('open_tab') }}">
         <span class="n">{{ sidebar_counts.to_separate }}</span>
         <span class="label">A separar</span>
@@ -32,7 +32,7 @@
         <span class="n">{{ sidebar_counts.completed }}</span>
         <span class="label">Separados</span>
       </div>
-    </aside>
+    </aside>{% endblock %}
     <main>
       {% with messages = get_flashed_messages() %}
         {% if messages %}
