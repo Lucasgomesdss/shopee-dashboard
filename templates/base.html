@@ -14,6 +14,7 @@
       <a href="{{ url_for('scan') }}">Escanear</a>
       <a href="{{ url_for('pending_tab') }}">Produto Pendente</a>
       <a href="{{ url_for('completed_tab') }}">Concluídos</a>
+      <a href="{{ url_for('desempenho.painel') }}">Desempenho</a>
       <a href="{{ url_for('lotes.painel') }}" style="background:#1a73e8;color:#fff;padding:6px 16px;border-radius:8px;font-weight:700;letter-spacing:.5px">ETIQUETAS</a>
       {% if employee_name %}<span style="opacity:.85">| {{ employee_name }}</span> <a href="{{ url_for('logout') }}">Sair</a>{% endif %}
     </nav>
