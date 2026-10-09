@@ -245,20 +245,20 @@ TEMPLATE = """
 .lt-update{background:#1a73e8;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer}
 .lt-update:hover{background:#1558b0}
 .lt-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0 0 20px}
-.lt-card{border-radius:12px;padding:14px 18px}
+.lt-card{border-radius:12px;padding:14px 18px;border:3px solid}
 .lt-card span{display:block;font-size:13px;font-weight:600}
 .lt-card b{display:block;font-size:38px;font-weight:700;line-height:1.2}
-.lt-total{background:#fff3b0;color:#6b5600}
-.lt-open{background:#ffd9b3;color:#8a3b00}
-.lt-done{background:#c8efc8;color:#14551a}
-.lt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
-.lt-lote{display:block;position:relative;border:2px solid #ddd;border-radius:12px;padding:14px 16px 14px 44px;background:#fff;cursor:pointer}
+.lt-total{background:#fff3b0;color:#6b5600;border-color:#e0b800}
+.lt-open{background:#ffd9b3;color:#8a3b00;border-color:#f08a24}
+.lt-done{background:#c8efc8;color:#14551a;border-color:#3aa63a}
+.lt-grid{display:flex;flex-direction:column;gap:10px;max-width:640px}
+.lt-lote{display:flex;align-items:center;gap:14px;border:2px solid #ddd;border-radius:12px;padding:12px 16px;background:#fff;cursor:pointer}
 .lt-lote:hover{border-color:#1a73e8}
 .lt-lote.sel{border-color:#1a73e8;background:#e8f0fe}
-.lt-lote input{position:absolute;left:14px;top:16px;width:20px;height:20px;cursor:pointer}
-.lt-name{display:block;font-size:15px;font-weight:700}
-.lt-count{display:block;font-size:30px;font-weight:700;line-height:1.2}
-.lt-note{display:block;font-size:11px;color:#666;margin-top:4px}
+.lt-lote input{flex:none;width:20px;height:20px;cursor:pointer}
+.lt-name{flex:1;font-size:15px;font-weight:700}
+.lt-count{flex:none;min-width:84px;text-align:center;font-size:26px;font-weight:700;line-height:1.2;border:3px solid #1a73e8;border-radius:10px;padding:2px 14px;background:#fff}
+.lt-note{display:block;font-size:11px;font-weight:400;color:#666;margin-top:4px}
 .lt-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:20px}
 .lt-go{background:#1a73e8;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer}
 .lt-msg{font-size:13px;color:#8a3b00}
@@ -282,9 +282,8 @@ TEMPLATE = """
   {% for l in s.lotes %}
   <label class="lt-lote">
     <input type="checkbox" class="lt-chk" data-n="{{ l.count }}" data-nome="{{ l.label }}">
-    <span class="lt-name">{{ l.label }}</span>
+    <span class="lt-name">{{ l.label }}{% if l.nota %}<span class="lt-note">{{ l.nota }}</span>{% endif %}</span>
     <span class="lt-count">{{ l.count }}</span>
-    {% if l.nota %}<span class="lt-note">{{ l.nota }}</span>{% endif %}
   </label>
   {% endfor %}
 </div>
