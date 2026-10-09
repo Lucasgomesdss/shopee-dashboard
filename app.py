@@ -511,5 +511,39 @@ def missing_products_pdf():
     return send_file(pdf_buffer, mimetype="application/pdf", as_attachment=True, download_name=filename)
 
 
+@app.route("/debug/zpl-check")
+def debug_zpl_check():
+    client = get_shopee_client()
+    if not client:
+        return jsonify({"error": "no client/token"})
+    out = {}
+    now = int(time.time())
+    try:
+        lst = client.get_order_list(now - 7 * 24 * 3600, now, order_status="READY_TO_SHIP", page_size=100)
+        orders = lst.get("response", {}).get("order_list", [])
+        out["ready_to_ship_count"] = len(orders)
+        out["ready_to_ship_more"] = lst.get("response", {}).get("more")
+        out["list_error"] = lst.get("error") or None
+        out["list_message"] = lst.get("message") or None
+        sn = orders[0]["order_sn"] if orders else None
+    except Exception as e:
+        out["list_exception"] = str(e)
+        sn = None
+    out["sample_order_sn"] = sn
+    if sn:
+        try:
+            out["shipping_parameter"] = client._shop_request("GET", "/api/v2/logistics/get_shipping_parameter", params={"order_sn": sn})
+        except Exception as e:
+            out["shipping_parameter_exception"] = str(e)
+        try:
+            out["document_parameter"] = client._shop_request(
+                "POST", "/api/v2/logistics/get_shipping_document_parameter",
+                json_body={"order_list": [{"order_sn": sn}]},
+            )
+        except Exception as e:
+            out["document_parameter_exception"] = str(e)
+    return jsonify(out)
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
