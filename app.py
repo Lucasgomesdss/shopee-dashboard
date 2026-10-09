@@ -511,5 +511,10 @@ def missing_products_pdf():
     return send_file(pdf_buffer, mimetype="application/pdf", as_attachment=True, download_name=filename)
 
 
+import lotes
+
+lotes.init_app(app, get_shopee_client)
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
