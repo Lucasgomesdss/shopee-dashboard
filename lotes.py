@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, redirect, render_template_string, url_for
 
 import models
+from layout_v2 import ICONES, render_page
 
 bp = Blueprint("lotes", __name__)
 
@@ -232,79 +233,60 @@ def _loop():
 
 
 TEMPLATE = """
-{% extends "base.html" %}
-{% block title %}Etiquetas{% endblock %}
-{% block sidebar %}{% endblock %}
-{% block content %}
 <style>
-.layout{display:block !important}
-.lt-wrap{max-width:1100px;margin:0 auto}
-.lt-top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
-.lt-sub{font-size:13px;color:#666}
-.lt-badge{font-size:12px;background:#fff3cd;color:#664d03;padding:2px 8px;border-radius:6px;margin-left:8px;font-weight:400}
-.lt-update{background:#1a73e8;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer}
-.lt-update:hover{background:#1558b0}
-.lt-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0 0 20px}
-.lt-card{border-radius:12px;padding:14px 18px;border:3px solid}
-.lt-card span{display:block;font-size:13px;font-weight:600}
-.lt-card b{display:block;font-size:38px;font-weight:700;line-height:1.2}
-.lt-total{background:#fff3b0;color:#6b5600;border-color:#e0b800}
-.lt-open{background:#ffd9b3;color:#8a3b00;border-color:#f08a24}
-.lt-done{background:#c8efc8;color:#14551a;border-color:#3aa63a}
-.lt-grid{display:flex;flex-direction:column;gap:10px;max-width:640px}
-.lt-lote{display:flex;align-items:center;gap:14px;border:2px solid #ddd;border-radius:12px;padding:12px 16px;background:#fff;cursor:pointer}
-.lt-lote:hover{border-color:#1a73e8}
-.lt-lote.sel{border-color:#1a73e8;background:#e8f0fe}
-.lt-lote input{flex:none;width:20px;height:20px;cursor:pointer}
-.lt-name{flex:1;font-size:15px;font-weight:700}
-.lt-count{flex:none;min-width:84px;text-align:center;font-size:26px;font-weight:700;line-height:1.2;border:3px solid #1a73e8;border-radius:10px;padding:2px 14px;background:#fff}
-.lt-note{display:block;font-size:11px;font-weight:400;color:#666;margin-top:4px}
-.lt-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:20px}
-.lt-go{background:#1a73e8;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer}
-.lt-msg{font-size:13px;color:#8a3b00}
+.v2-wrap{max-width:1100px}
 </style>
-<div class="lt-wrap">
-<div class="lt-top">
+<div class="v2-wrap">
+<div class="v2-h">
   <div>
-    <h2 style="margin:0">Etiquetas<span class="lt-badge">Modo visualização</span></h2>
-    <div class="lt-sub">{% if s.atualizado_em %}Atualizado em {{ s.atualizado_em }} · {% endif %}atualiza sozinho a cada 30 minutos</div>
+    <h1>Etiquetas<span class="v2-badge">Modo visualização</span></h1>
+    <div class="v2-sub">{% if s.atualizado_em %}Atualizado em {{ s.atualizado_em }} · {% endif %}atualiza sozinho a cada 30 minutos</div>
   </div>
-  <form method="post" action="{{ url_for('lotes.atualizar_agora') }}"><button type="submit" class="lt-update">Atualizar agora</button></form>
+  <form method="post" action="{{ url_for('lotes.atualizar_agora') }}"><button type="submit" class="v2-btn">{{ ic.recarregar|safe }}Atualizar agora</button></form>
 </div>
-{% if s.erro %}<div class="flash">Não consegui atualizar agora: {{ s.erro }}</div>{% endif %}
+{% if s.erro %}<div class="v2-flash">Não consegui atualizar agora: {{ s.erro }}</div>{% endif %}
 {% if 'lotes' in s %}
-<div class="lt-cards">
-  <div class="lt-card lt-total"><span>Total do dia</span><b>{{ s.total }}</b></div>
-  <div class="lt-card lt-open"><span>Em aberto</span><b>{{ s.em_aberto }}</b></div>
-  <div class="lt-card lt-done"><span>Já processados</span><b>{{ s.processados }}</b></div>
+<div class="v2-cards">
+  <div class="v2-card y"><span class="ci">{{ ic.pendente|safe }}</span><div><div class="l">Total do dia</div><div class="n">{{ s.total }}</div></div></div>
+  <div class="v2-card o"><span class="ci">{{ ic.relogio|safe }}</span><div><div class="l">Em aberto</div><div class="n">{{ s.em_aberto }}</div></div></div>
+  <div class="v2-card g"><span class="ci">{{ ic.concluidos|safe }}</span><div><div class="l">Já processados</div><div class="n">{{ s.processados }}</div></div></div>
 </div>
-<div class="lt-grid">
+<div class="v2-sec">
+  <h2>Lotes disponíveis</h2>
+  <div class="r"><span>{{ s.lotes|length }} lote{{ '' if s.lotes|length == 1 else 's' }}</span>
+    <button type="button" class="v2-btn sec" id="lt-all">Selecionar todos</button>
+    <button type="button" class="v2-btn sec" id="lt-none">Limpar</button>
+  </div>
+</div>
+<div class="v2-list">
   {% for l in s.lotes %}
-  <label class="lt-lote">
+  <label class="v2-lote">
     <input type="checkbox" class="lt-chk" data-n="{{ l.count }}" data-nome="{{ l.label }}">
-    <span class="lt-name">{{ l.label }}{% if l.nota %}<span class="lt-note">{{ l.nota }}</span>{% endif %}</span>
-    <span class="lt-count">{{ l.count }}</span>
+    <span class="v2-lt"><b>{{ l.label }}</b>{% if l.nota %}<small>{{ l.nota }}</small>{% endif %}</span>
+    <span class="v2-cnt">{{ l.count }}</span>
   </label>
   {% endfor %}
 </div>
-<div class="lt-bar">
-  <button type="button" class="lt-go" id="lt-go">Gerar arquivo</button>
-  <span id="lt-sel">Nenhum arquivo selecionado</span>
-  <span class="lt-msg" id="lt-msg"></span>
+<div class="v2-bar">
+  <div class="t"><span id="lt-sel">Nenhum arquivo selecionado</span><b id="lt-tot">0</b> <span style="display:inline">etiquetas</span> <span class="v2-msg" id="lt-msg"></span></div>
+  <button type="button" class="v2-btn" id="lt-go">{{ ic.baixar|safe }}Gerar arquivo</button>
 </div>
 <script>
 (function(){
-  var chks=document.querySelectorAll(".lt-chk"), sel=document.getElementById("lt-sel"), msg=document.getElementById("lt-msg");
+  var chks=document.querySelectorAll(".lt-chk"), sel=document.getElementById("lt-sel"), tot=document.getElementById("lt-tot"), msg=document.getElementById("lt-msg");
   function upd(){
     var c=0,e=0;
     chks.forEach(function(x){
       x.parentNode.classList.toggle("sel",x.checked);
       if(x.checked){c++;e+=parseInt(x.dataset.n,10);}
     });
-    sel.textContent=c?(c+(c>1?" arquivos selecionados, ":" arquivo selecionado, ")+e+" etiquetas"):"Nenhum arquivo selecionado";
+    sel.textContent=c?(c+(c>1?" arquivos selecionados":" arquivo selecionado")):"Nenhum arquivo selecionado";
+    tot.textContent=e;
     msg.textContent="";
   }
   chks.forEach(function(x){x.addEventListener("change",upd);});
+  document.getElementById("lt-all").addEventListener("click",function(){chks.forEach(function(x){x.checked=true;});upd();});
+  document.getElementById("lt-none").addEventListener("click",function(){chks.forEach(function(x){x.checked=false;});upd();});
   document.getElementById("lt-go").addEventListener("click",function(){
     var c=0; chks.forEach(function(x){if(x.checked)c++;});
     msg.textContent=c?"A geração ainda está desativada: o painel está em modo visualização.":"Marque pelo menos um arquivo.";
@@ -315,13 +297,12 @@ TEMPLATE = """
 <p>Ainda sem dados. Clique em "Atualizar agora".</p>
 {% endif %}
 </div>
-{% endblock %}
 """
 
 
 @bp.route("/lotes")
 def painel():
-    return render_template_string(TEMPLATE, s=_ler())
+    return render_page("Etiquetas", "etiquetas", TEMPLATE, s=_ler(), ic=ICONES)
 
 
 @bp.route("/lotes/atualizar", methods=["POST"])
