@@ -6,9 +6,10 @@ confirmed_at, gravados quando o colaborador confirma o pedido). Não altera nada
 
 from datetime import datetime, timedelta, timezone
 
-from flask import Blueprint, render_template_string, request
+from flask import Blueprint, request
 
 import models
+from layout_v2 import ICONES, render_page
 
 bp = Blueprint("desempenho", __name__)
 
@@ -70,35 +71,28 @@ def calcular(dia):
     return {"labels": ["%02dh" % h for h in horas], "series": series}
 
 
-TEMPLATE = """{% extends "base.html" %}
-{% block title %}Desempenho{% endblock %}
-{% block sidebar %}{% endblock %}
-{% block content %}
-<style>
-.dp-wrap{max-width:900px}
-.dp-top{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
-.dp-top h2{margin:0}
-.dp-cards{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
-.dp-card{flex:1;min-width:130px;background:#fff;border:1px solid #e1e0d9;padding:12px 14px}
-.dp-card .n{font-size:26px;font-weight:700}
-.dp-card .l{font-size:13px;color:#52514e}
-.dp-chart{position:relative;height:340px;background:#fff;border:1px solid #e1e0d9;padding:10px}
-</style>
-<div class="dp-wrap">
-  <div class="dp-top">
-    <h2>Desempenho</h2>
-    <form method="get" style="margin:0">
-      <input type="date" name="dia" value="{{ dia }}" onchange="this.form.submit()">
-    </form>
+TEMPLATE = """
+<div style="max-width:1000px">
+  <div class="v2-h">
+    <div>
+      <h1>Desempenho</h1>
+      <form method="get" style="margin:8px 0 0">
+        <input type="date" name="dia" value="{{ dia }}" onchange="this.form.submit()" style="font:inherit;padding:8px 12px;border:1px solid #c7ccd6;border-radius:10px;background:#fff">
+      </form>
+    </div>
   </div>
-  <div class="dp-cards">
+  <div class="v2-cards">
     {% for s in series %}
-    <div class="dp-card" style="border-left:5px solid {{ s.cor }}">
-      <div class="l">{{ s.nome }}</div><div class="n">{{ s.total }}</div>
+    <div class="v2-card" style="border-color:{{ s.cor }}">
+      <span class="ci" style="background:{{ s.cor }}22;color:{{ s.cor }}">{{ ic.pendente|safe }}</span>
+      <div><div class="l">{{ s.nome }}</div><div class="n">{{ s.total }}</div></div>
     </div>
     {% endfor %}
   </div>
-  <div class="dp-chart"><canvas id="dp"></canvas></div>
+  <div class="v2-panel">
+    <h3>Pedidos por hora</h3>
+    <div style="position:relative;height:340px"><canvas id="dp"></canvas></div>
+  </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script>
@@ -112,12 +106,11 @@ new Chart(document.getElementById('dp'), {
     pointBorderColor: '#fff', pointBorderWidth: 2};})},
   options: {responsive: true, maintainAspectRatio: false,
     interaction: {mode: 'index', intersect: false},
-    plugins: {legend: {position: 'top'}},
+    plugins: {legend: {position: 'top', align: 'end'}},
     scales: {x: {grid: {display: false}},
       y: {beginAtZero: true, ticks: {precision: 0}, title: {display: true, text: 'Pedidos na hora'}}}}
 });
 </script>
-{% endblock %}
 """
 
 
@@ -125,8 +118,14 @@ new Chart(document.getElementById('dp'), {
 def painel():
     dia = _dia_param()
     dados = calcular(dia)
-    return render_template_string(
-        TEMPLATE, dia=dia.isoformat(), labels=dados["labels"], series=dados["series"]
+    return render_page(
+        "Desempenho",
+        "desempenho",
+        TEMPLATE,
+        dia=dia.isoformat(),
+        labels=dados["labels"],
+        series=dados["series"],
+        ic=ICONES,
     )
 
 
