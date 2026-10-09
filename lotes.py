@@ -101,11 +101,12 @@ def calcular(client):
     agora = int(time.time())
     prontos = _listar(client, "READY_TO_SHIP", agora - 14 * 86400, agora, "update_time")
     meia_noite = int(datetime.now(BRT).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
-    processados = _listar(client, "PROCESSED", meia_noite, agora, "update_time")
+    processados_sn = _listar(client, "PROCESSED", meia_noite, agora, "update_time")
 
     contagem = Counter()
     resto = Counter()
     fbs = 0
+    abertos = 0
     for i in range(0, len(prontos), 50):
         res = client.get_order_detail(prontos[i:i + 50])
         if res.get("error"):
@@ -114,6 +115,7 @@ def calcular(client):
             if od.get("fulfillment_flag") == "fulfilled_by_shopee":
                 fbs += 1
                 continue
+            abertos += 1
             itens = od.get("item_list") or []
             rotulo = classificar(itens)
             if rotulo is None:
@@ -123,6 +125,15 @@ def calcular(client):
                     var = itens[0].get("model_name")
                     resto[nome + (" / " + var if var else "")] += 1
             contagem[rotulo] += 1
+
+    processados = 0
+    for i in range(0, len(processados_sn), 50):
+        res = client.get_order_detail(processados_sn[i:i + 50])
+        if res.get("error"):
+            raise RuntimeError("Shopee: %s %s" % (res.get("error"), res.get("message")))
+        for od in (res.get("response") or {}).get("order_list", []):
+            if od.get("fulfillment_flag") != "fulfilled_by_shopee":
+                processados += 1
 
     unitarios = contagem.pop("_RESTO", 0)
     sem_filtro = unitarios
@@ -149,9 +160,9 @@ def calcular(client):
 
     return {
         "lotes": lotes,
-        "em_aberto": len(prontos),
-        "processados": len(processados),
-        "total": len(prontos) + len(processados),
+        "em_aberto": abertos,
+        "processados": processados,
+        "total": abertos + processados,
         "fbs": fbs,
         "soma_lotes": sum(x["count"] for x in lotes),
         "resto_top": resto.most_common(20),
@@ -261,7 +272,6 @@ TEMPLATE = """
     <tr><td class="lt-note">Soma dos arquivos</td><td class="lt-n">{{ s.soma_lotes }}</td></tr>
   </tbody>
 </table>
-{% if s.fbs %}<p class="lt-note">{{ s.fbs }} pedido(s) Fulfilled by Shopee ficam fora dos lotes.</p>{% endif %}
 <p class="lt-note">Filtros com menos de {{ s.minimo }} pedidos vão para DIVERSOS UNITÁRIOS. Esta tela só lê: não organiza envio nem gera etiqueta.</p>
 {% if s.resto_top %}
 <details><summary class="lt-note">Itens sem filtro que estão em DIVERSOS UNITÁRIOS</summary>
