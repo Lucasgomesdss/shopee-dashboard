@@ -296,37 +296,6 @@ def atualizar_agora():
     return redirect(url_for("lotes.painel"))
 
 
-@bp.route("/lotes/debug-especiais")
-def debug_especiais():
-    from flask import jsonify
-    client = _get_client[0]()
-    agora = int(time.time())
-    prontos = _listar(client, "READY_TO_SHIP", agora - 14 * 86400, agora, "update_time")
-    por_canal = Counter()
-    amostra = {}
-    for i in range(0, len(prontos), 50):
-        res = client.get_order_detail(prontos[i:i + 50])
-        for od in (res.get("response") or {}).get("order_list", []):
-            if od.get("fulfillment_flag") == "fulfilled_by_shopee":
-                continue
-            canal = od.get("shipping_carrier") or "?"
-            por_canal[canal] += 1
-            amostra.setdefault(canal, od["order_sn"])
-    out = {"por_canal": dict(por_canal), "amostras": {}}
-    for canal, sn in amostra.items():
-        item = {"order_sn": sn}
-        try:
-            item["shipping_parameter"] = client._shop_request("GET", "/api/v2/logistics/get_shipping_parameter", params={"order_sn": sn})
-        except Exception as e:
-            item["shipping_parameter_erro"] = str(e)
-        try:
-            item["document_parameter"] = client._shop_request("POST", "/api/v2/logistics/get_shipping_document_parameter", json_body={"order_list": [{"order_sn": sn}]})
-        except Exception as e:
-            item["document_parameter_erro"] = str(e)
-        out["amostras"][canal] = item
-    return jsonify(out)
-
-
 def init_app(app, get_client):
     _get_client[0] = get_client
     app.register_blueprint(bp)
