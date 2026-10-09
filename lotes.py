@@ -233,54 +233,89 @@ def _loop():
 
 TEMPLATE = """
 {% extends "base.html" %}
-{% block title %}Lotes de etiquetas{% endblock %}
+{% block title %}Etiquetas{% endblock %}
+{% block sidebar %}{% endblock %}
 {% block content %}
 <style>
-.lt-top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.layout{display:block !important}
+.lt-wrap{max-width:1100px;margin:0 auto}
+.lt-top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
 .lt-sub{font-size:13px;color:#666}
-.lt-badge{font-size:12px;background:#fff3cd;color:#664d03;padding:2px 8px;border-radius:6px;margin-left:8px}
-.lt-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0 16px}
-.lt-card{background:#f5f5f5;border-radius:8px;padding:10px 14px}
-.lt-card span{display:block;font-size:12px;color:#666}
-.lt-card b{font-size:26px;font-weight:600}
-.lt-table{width:100%;border-collapse:collapse}
-.lt-table th{text-align:left;font-size:12px;color:#666;font-weight:400;padding:6px 8px;border-bottom:1px solid #ddd}
-.lt-table td{padding:9px 8px;border-bottom:1px solid #eee}
-.lt-n{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
-.lt-note{font-size:12px;color:#666}
+.lt-badge{font-size:12px;background:#fff3cd;color:#664d03;padding:2px 8px;border-radius:6px;margin-left:8px;font-weight:400}
+.lt-update{background:#1a73e8;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer}
+.lt-update:hover{background:#1558b0}
+.lt-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0 0 20px}
+.lt-card{border-radius:12px;padding:14px 18px}
+.lt-card span{display:block;font-size:13px;font-weight:600}
+.lt-card b{display:block;font-size:38px;font-weight:700;line-height:1.2}
+.lt-total{background:#fff3b0;color:#6b5600}
+.lt-open{background:#ffd9b3;color:#8a3b00}
+.lt-done{background:#c8efc8;color:#14551a}
+.lt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
+.lt-lote{display:block;position:relative;border:2px solid #ddd;border-radius:12px;padding:14px 16px 14px 44px;background:#fff;cursor:pointer}
+.lt-lote:hover{border-color:#1a73e8}
+.lt-lote.sel{border-color:#1a73e8;background:#e8f0fe}
+.lt-lote input{position:absolute;left:14px;top:16px;width:20px;height:20px;cursor:pointer}
+.lt-name{display:block;font-size:15px;font-weight:700}
+.lt-count{display:block;font-size:30px;font-weight:700;line-height:1.2}
+.lt-note{display:block;font-size:11px;color:#666;margin-top:4px}
+.lt-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:20px}
+.lt-go{background:#1a73e8;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer}
+.lt-msg{font-size:13px;color:#8a3b00}
 </style>
+<div class="lt-wrap">
 <div class="lt-top">
   <div>
-    <h2 style="margin:0">Lotes de etiquetas<span class="lt-badge">Modo visualização</span></h2>
+    <h2 style="margin:0">Etiquetas<span class="lt-badge">Modo visualização</span></h2>
     <div class="lt-sub">{% if s.atualizado_em %}Atualizado em {{ s.atualizado_em }} · {% endif %}atualiza sozinho a cada 30 minutos</div>
   </div>
-  <form method="post" action="{{ url_for('lotes.atualizar_agora') }}"><button type="submit">Atualizar agora</button></form>
+  <form method="post" action="{{ url_for('lotes.atualizar_agora') }}"><button type="submit" class="lt-update">Atualizar agora</button></form>
 </div>
 {% if s.erro %}<div class="flash">Não consegui atualizar agora: {{ s.erro }}</div>{% endif %}
 {% if 'lotes' in s %}
 <div class="lt-cards">
-  <div class="lt-card"><span>Total do dia (em aberto + processados)</span><b>{{ s.total }}</b></div>
-  <div class="lt-card"><span>Em aberto (aguardando na Shopee)</span><b>{{ s.em_aberto }}</b></div>
-  <div class="lt-card"><span>Já processados hoje</span><b>{{ s.processados }}</b></div>
+  <div class="lt-card lt-total"><span>Total do dia</span><b>{{ s.total }}</b></div>
+  <div class="lt-card lt-open"><span>Em aberto</span><b>{{ s.em_aberto }}</b></div>
+  <div class="lt-card lt-done"><span>Já processados</span><b>{{ s.processados }}</b></div>
 </div>
-<table class="lt-table">
-  <thead><tr><th>Arquivo</th><th class="lt-n">Etiquetas</th></tr></thead>
-  <tbody>
+<div class="lt-grid">
   {% for l in s.lotes %}
-    <tr><td>{{ l.label }}{% if l.nota %}<div class="lt-note">{{ l.nota }}</div>{% endif %}</td><td class="lt-n">{{ l.count }}</td></tr>
+  <label class="lt-lote">
+    <input type="checkbox" class="lt-chk" data-n="{{ l.count }}" data-nome="{{ l.label }}">
+    <span class="lt-name">{{ l.label }}</span>
+    <span class="lt-count">{{ l.count }}</span>
+    {% if l.nota %}<span class="lt-note">{{ l.nota }}</span>{% endif %}
+  </label>
   {% endfor %}
-    <tr><td class="lt-note">Soma dos arquivos</td><td class="lt-n">{{ s.soma_lotes }}</td></tr>
-  </tbody>
-</table>
-<p class="lt-note">Filtros com menos de {{ s.minimo }} pedidos vão para DIVERSOS UNITÁRIOS. Esta tela só lê: não organiza envio nem gera etiqueta.</p>
-{% if s.resto_top %}
-<details><summary class="lt-note">Itens sem filtro que estão em DIVERSOS UNITÁRIOS</summary>
-  <ul class="lt-note">{% for nome, n in s.resto_top %}<li>{{ n }} × {{ nome }}</li>{% endfor %}</ul>
-</details>
-{% endif %}
+</div>
+<div class="lt-bar">
+  <button type="button" class="lt-go" id="lt-go">Gerar arquivo</button>
+  <span id="lt-sel">Nenhum arquivo selecionado</span>
+  <span class="lt-msg" id="lt-msg"></span>
+</div>
+<script>
+(function(){
+  var chks=document.querySelectorAll(".lt-chk"), sel=document.getElementById("lt-sel"), msg=document.getElementById("lt-msg");
+  function upd(){
+    var c=0,e=0;
+    chks.forEach(function(x){
+      x.parentNode.classList.toggle("sel",x.checked);
+      if(x.checked){c++;e+=parseInt(x.dataset.n,10);}
+    });
+    sel.textContent=c?(c+(c>1?" arquivos selecionados, ":" arquivo selecionado, ")+e+" etiquetas"):"Nenhum arquivo selecionado";
+    msg.textContent="";
+  }
+  chks.forEach(function(x){x.addEventListener("change",upd);});
+  document.getElementById("lt-go").addEventListener("click",function(){
+    var c=0; chks.forEach(function(x){if(x.checked)c++;});
+    msg.textContent=c?"A geração ainda está desativada: o painel está em modo visualização.":"Marque pelo menos um arquivo.";
+  });
+})();
+</script>
 {% else %}
 <p>Ainda sem dados. Clique em "Atualizar agora".</p>
 {% endif %}
+</div>
 {% endblock %}
 """
 
