@@ -518,6 +518,20 @@ def debug_zpl_run():
     client = get_shopee_client()
     out = {"order_sn": sn, "steps": []}
     doc_type = request.args.get("type", "THERMAL_AIR_WAYBILL")
+    if request.args.get("raw"):
+        import zipfile, io as _io, time as _t2
+        path = "/api/v2/logistics/download_shipping_document"
+        ts = int(_t2.time())
+        sign = client._sign(path, ts, f"{client.access_token}{client.shop_id}")
+        q = {"partner_id": client.partner_id, "timestamp": ts, "sign": sign, "shop_id": client.shop_id, "access_token": client.access_token}
+        rr = client.session.post(f"{client.host}{path}", params=q, json={"shipping_document_type": doc_type, "order_list": [{"order_sn": sn}]}, timeout=20)
+        try:
+            z = zipfile.ZipFile(_io.BytesIO(rr.content))
+            data = z.read(z.namelist()[0])
+        except Exception:
+            data = rr.content
+        from flask import Response
+        return Response(data, mimetype="text/plain; charset=utf-8")
     try:
         sp = client._shop_request("GET", "/api/v2/logistics/get_shipping_parameter", params={"order_sn": sn})
         out["shipping_parameter"] = sp
