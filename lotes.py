@@ -232,6 +232,16 @@ def _loop():
         time.sleep(REFRESH_SECONDS)
 
 
+_rodando = [False]
+
+
+def _bg():
+    try:
+        atualizar()
+    finally:
+        _rodando[0] = False
+
+
 TEMPLATE = """
 <style>
 .v2-wrap{max-width:1100px}
@@ -240,10 +250,11 @@ TEMPLATE = """
 <div class="v2-h">
   <div>
     <h1>Etiquetas<span class="v2-badge">Modo visualização</span></h1>
-    <div class="v2-sub">{% if s.atualizado_em %}Atualizado em {{ s.atualizado_em }} · {% endif %}atualiza sozinho a cada 30 minutos</div>
+    <div class="v2-sub">{% if s.atualizado_em %}Atualizado em {{ s.atualizado_em }} · {% endif %}atualiza só quando você clicar em Atualizar agora</div>
   </div>
   <form method="post" action="{{ url_for('lotes.atualizar_agora') }}"><button type="submit" class="v2-btn">{{ ic.recarregar|safe }}Atualizar agora</button></form>
 </div>
+{% if rodando %}<div class="v2-flash">Atualizando as etiquetas... esta página recarrega sozinha.</div><script>setTimeout(function(){location.reload()},5000)</script>{% endif %}
 {% if s.erro %}<div class="v2-flash">Não consegui atualizar agora: {{ s.erro }}</div>{% endif %}
 {% if 'lotes' in s %}
 <div class="v2-cards">
@@ -302,16 +313,17 @@ TEMPLATE = """
 
 @bp.route("/lotes")
 def painel():
-    return render_page("Etiquetas", "etiquetas", TEMPLATE, s=_ler(), ic=ICONES)
+    return render_page("Etiquetas", "etiquetas", TEMPLATE, s=_ler(), ic=ICONES, rodando=_rodando[0])
 
 
 @bp.route("/lotes/atualizar", methods=["POST"])
 def atualizar_agora():
-    atualizar()
+    if not _rodando[0]:
+        _rodando[0] = True
+        threading.Thread(target=_bg, daemon=True).start()
     return redirect(url_for("lotes.painel"))
 
 
 def init_app(app, get_client):
     _get_client[0] = get_client
     app.register_blueprint(bp)
-    threading.Thread(target=_loop, daemon=True).start()
