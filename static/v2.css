@@ -110,3 +110,10 @@ body.v2-min .v2-bar{left:76px}
 .v2-main .tag{font-size:11px}
 .v2-main .items-total{border-radius:12px}
 @media (max-width:720px){.v2-main .sidebar{width:100%}}
+/* menu recolhido */
+.v2-foot a[href*="logout"]{background:#4a1f24;color:#ff9a94;font-weight:700}
+.v2-foot a[href*="logout"]:hover{background:#5d262c}
+body.v2-min .v2-foot a[href*="logout"],body.v2-min .v2-col{flex-direction:column;gap:2px;font-size:10px}
+body.v2-min .v2-foot a[href*="logout"]::after{content:"Sair"}
+body.v2-min .v2-col::after{content:"Abrir"}
+body.v2-min .v2-col{border:1px dashed #4a5268}
