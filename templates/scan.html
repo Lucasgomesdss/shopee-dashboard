@@ -49,7 +49,8 @@
       {% if not already_done %}
         <div class="row" style="flex-direction: column; align-items: flex-start; gap: 8px;">
           <form class="inline" method="post" action="{{ url_for('complete_order', order_sn=order.order_sn) }}">
-            <button type="submit" class="btn-ok">✅ Separado, dar OK</button>
+            <button type="submit" class="btn-ok" id="ok-btn">✅ Separado, dar OK</button>
+            <span class="muted" style="margin-left:8px">ou aperte Enter</span>
           </form>
           <button type="submit" form="missing-form" class="btn-warn btn-sm">❌ Falta produto</button>
         </div>
@@ -63,4 +64,28 @@
       {% endif %}
     </div>
   {% endif %}
+<script>
+(function(){
+  var btn=document.getElementById("ok-btn");
+  if(!btn) return;
+  var enviado=false, inicio=Date.now();
+  document.addEventListener("keydown",function(e){
+    if(e.key!=="Enter"||e.repeat||e.isComposing) return;
+    if(Date.now()-inicio<600) return;
+    var a=document.activeElement, tag=a?a.tagName:"";
+    if(tag==="TEXTAREA"||tag==="SELECT"||tag==="BUTTON"||tag==="SUMMARY"||tag==="A") return;
+    if(tag==="INPUT"){
+      if(a.type==="checkbox"||a.type==="radio") return;
+      if(a.value!=="") return;
+      if(a.closest("details")) return;
+    }
+    if(document.querySelector('input[name="missing_item"]:checked')) return;
+    e.preventDefault();
+    if(enviado) return;
+    enviado=true;
+    btn.disabled=true;
+    btn.form.submit();
+  });
+})();
+</script>
 {% endblock %}
