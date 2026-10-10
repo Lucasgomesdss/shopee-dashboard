@@ -117,3 +117,5 @@ body.v2-min .v2-foot a[href$="/sair"],body.v2-min .v2-col{flex-direction:column;
 body.v2-min .v2-foot a[href$="/sair"]::after{content:"Sair"}
 body.v2-min .v2-col::after{content:"Abrir"}
 body.v2-min .v2-col{border:1px dashed #4a5268}
+/* aproveitar a largura */
+.v2-main .layout{max-width:none;margin:0}
