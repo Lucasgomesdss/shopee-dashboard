@@ -327,3 +327,5 @@ def atualizar_agora():
 def init_app(app, get_client):
     _get_client[0] = get_client
     app.register_blueprint(bp)
+    import reimpressao
+    reimpressao.init_app(app, get_client)
