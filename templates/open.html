@@ -5,9 +5,18 @@
 {% if not orders %}
 <p class="muted">Nenhum pedido esperando separação no momento 🎉</p>
 {% endif %}
+<form method="post" action="{{ url_for('reimpressao.reimprimir') }}" id="rp-form">
+{% if orders %}
+<div class="card" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+<b>Reimprimir etiquetas</b>
+<span class="muted">Marque os pedidos e baixe o arquivo ZPL (.txt) com as etiquetas deles.</span>
+<button type="button" class="btn btn-sm" id="rp-all">Selecionar todos</button>
+<button type="button" class="btn btn-sm" id="rp-none">Limpar</button>
+</div>
+{% endif %}
 {% for order in orders %}
 <div class="card">
-<h3>{{ order.order_sn }} <span class="tag to_separate">a separar</span>{% if order.shipping_carrier and "retirada" in order.shipping_carrier|lower %} <span class="tag pickup">retirada pelo comprador</span>{% endif %}</h3>
+<h3><label style="cursor:pointer"><input type="checkbox" name="sn" value="{{ order.order_sn }}" class="rp-chk" style="width:18px;height:18px;vertical-align:middle;margin-right:8px"></label>{{ order.order_sn }} <span class="tag to_separate">a separar</span>{% if order.shipping_carrier and "retirada" in order.shipping_carrier|lower %} <span class="tag pickup">retirada pelo comprador</span>{% endif %}</h3>
 <p class="muted">Rastreio: {{ order.tracking_number or "-" }}</p>
 <table>
 <thead><tr><th>Foto</th><th>Produto</th><th>SKU</th><th>Variação</th><th>Qtd</th></tr></thead>
@@ -18,10 +27,37 @@
 </tbody>
 </table>
 {% if order.shipping_carrier and "retirada" in order.shipping_carrier|lower %}
-<form method="post" action="{{ url_for('complete_order', order_sn=order.order_sn) }}" onsubmit="return confirm('Confirmar que o comprador já retirou este pedido?');">
-<button type="submit" class="btn btn-ok btn-sm">Marcar como retirado</button>
-</form>
+<button type="submit" class="btn btn-ok btn-sm" formaction="{{ url_for('complete_order', order_sn=order.order_sn) }}" formmethod="post" onclick="return confirm('Confirmar que o comprador já retirou este pedido?');">Marcar como retirado</button>
 {% endif %}
 </div>
 {% endfor %}
+{% if orders %}
+<div style="height:80px"></div>
+<div class="v2-bar">
+<div class="t"><span id="rp-sel">Nenhum pedido selecionado</span></div>
+<button type="submit" class="v2-btn" id="rp-go">Baixar etiquetas selecionadas</button>
+</div>
+{% endif %}
+</form>
+<script>
+(function(){
+  var chks=document.querySelectorAll(".rp-chk"), sel=document.getElementById("rp-sel"), go=document.getElementById("rp-go"), form=document.getElementById("rp-form");
+  if(!form) return;
+  function upd(){
+    var c=0; chks.forEach(function(x){ if(x.checked) c++; });
+    sel.textContent=c?(c+(c>1?" pedidos selecionados":" pedido selecionado")):"Nenhum pedido selecionado";
+  }
+  chks.forEach(function(x){ x.addEventListener("change",upd); });
+  document.getElementById("rp-all").addEventListener("click",function(){ chks.forEach(function(x){x.checked=true;}); upd(); });
+  document.getElementById("rp-none").addEventListener("click",function(){ chks.forEach(function(x){x.checked=false;}); upd(); });
+  form.addEventListener("submit",function(e){
+    var s=e.submitter;
+    if(s && s.id!=="rp-go") return;
+    var c=0; chks.forEach(function(x){ if(x.checked) c++; });
+    if(!c){ e.preventDefault(); sel.textContent="Marque pelo menos um pedido."; return; }
+    go.disabled=true; go.textContent="Buscando etiquetas na Shopee...";
+    setTimeout(function(){ go.disabled=false; go.textContent="Baixar etiquetas selecionadas"; },60000);
+  });
+})();
+</script>
 {% endblock %}
