@@ -32,7 +32,7 @@
 {% with messages = get_flashed_messages() %}{% for m in messages %}<div class="v2-flash">{{ m }}</div>{% endfor %}{% endwith %}
 <div class="layout">
   {% block sidebar %}<aside class="sidebar">
-    <div class="sidebar-stat to_separate"><span class="n">{{ sidebar_counts.to_separate }}</span><span class="label">A separar</span></div>
+    <div class="sidebar-stat to_separate" role="link" title="Abrir A separar" style="cursor:pointer" onclick="location.href='/a-separar'"><span class="n">{{ sidebar_counts.to_separate }}</span><span class="label">A separar</span></div>
     <div class="sidebar-stat pending"><span class="n">{{ sidebar_counts.pending }}</span><span class="label">Falta produto</span></div>
     <div class="sidebar-stat completed"><span class="n">{{ sidebar_counts.completed }}</span><span class="label">Separados</span></div>
   </aside>{% endblock %}
