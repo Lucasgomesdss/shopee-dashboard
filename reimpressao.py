@@ -57,30 +57,46 @@ def _extrair_texto(conteudo):
     return conteudo.decode("utf-8", errors="replace").strip()
 
 
+def _entrada(sn, pacote, rastreio):
+    e = {"order_sn": sn}
+    if pacote:
+        e["package_number"] = pacote
+    if rastreio:
+        e["tracking_number"] = rastreio
+    return e
+
+
 def _lote(client, sns, falhas):
     """Devolve o texto ZPL dos pedidos do lote. Pedidos com problema vão para `falhas`."""
     det = client.get_order_detail(sns).get("response", {}).get("order_list", [])
     pacotes = {}
+    rastreios = {}
     for od in det:
-        pk = ((od.get("package_list") or [{}])[0]).get("package_number")
-        pacotes[od["order_sn"]] = pk
+        pkg = (od.get("package_list") or [{}])[0]
+        pacotes[od["order_sn"]] = pkg.get("package_number")
+        rastreios[od["order_sn"]] = pkg.get("tracking_number")
+    for sn in sns:
+        local = models.get_order(sn)
+        if local and local.get("tracking_number"):
+            rastreios[sn] = local["tracking_number"]
     for sn in sns:
         if sn not in pacotes:
             falhas.append((sn, "pedido não encontrado na Shopee"))
-    base = [
-        {"order_sn": sn, **({"package_number": pk} if pk else {})}
-        for sn, pk in pacotes.items()
-    ]
+    base = [_entrada(sn, pk, rastreios.get(sn)) for sn, pk in pacotes.items()]
     if not base:
         return ""
 
     # Tipo de documento: só aceitamos térmico (ZPL).
     par = _json(_post(client, "/api/v2/logistics/get_shipping_document_parameter", {"order_list": base}))
     por_tipo = {}
+    if par.get("error") and not (par.get("response") or {}).get("result_list"):
+        for e in base:
+            falhas.append((e["order_sn"], "parâmetro: " + str(par.get("message") or par.get("error"))))
+        return ""
     for r in (par.get("response") or {}).get("result_list", []):
         sn = r.get("order_sn")
         if r.get("fail_error") or r.get("fail_message"):
-            falhas.append((sn, r.get("fail_message") or r.get("fail_error")))
+            falhas.append((sn, "parâmetro: " + str(r.get("fail_message") or r.get("fail_error"))))
             continue
         sel = r.get("selectable_shipping_document_type") or []
         tipo = "THERMAL_AIR_WAYBILL" if "THERMAL_AIR_WAYBILL" in sel else None
@@ -90,7 +106,7 @@ def _lote(client, sns, falhas):
         if not tipo:
             falhas.append((sn, "a Shopee não oferece etiqueta térmica (ZPL) para este pedido"))
             continue
-        por_tipo.setdefault(tipo, []).append({"order_sn": sn, **({"package_number": pacotes[sn]} if pacotes.get(sn) else {})})
+        por_tipo.setdefault(tipo, []).append(_entrada(sn, pacotes.get(sn), rastreios.get(sn)))
 
     saida = []
     for tipo, ordens in por_tipo.items():
@@ -100,11 +116,11 @@ def _lote(client, sns, falhas):
         falhou = {r.get("order_sn"): r for r in (cri.get("response") or {}).get("result_list", []) if r.get("fail_error")}
         if cri.get("error") and not (cri.get("response") or {}).get("result_list"):
             for o in ordens:
-                falhas.append((o["order_sn"], cri.get("message") or cri.get("error")))
+                falhas.append((o["order_sn"], "criar: " + str(cri.get("message") or cri.get("error"))))
             continue
         for o in ordens:
             if o["order_sn"] in falhou:
-                falhas.append((o["order_sn"], falhou[o["order_sn"]].get("fail_message") or falhou[o["order_sn"]].get("fail_error")))
+                falhas.append((o["order_sn"], "criar: " + str(falhou[o["order_sn"]].get("fail_message") or falhou[o["order_sn"]].get("fail_error"))))
             else:
                 ok.append(o)
         if not ok:
@@ -141,7 +157,7 @@ def _lote(client, sns, falhas):
         if "json" in tipo_resp:
             erro = _json(resp)
             for o in prontos:
-                falhas.append((o["order_sn"], erro.get("message") or erro.get("error") or "falha no download"))
+                falhas.append((o["order_sn"], "baixar: " + str(erro.get("message") or erro.get("error") or "falha no download")))
             continue
         saida.append(_extrair_texto(resp.content))
     return "\n".join(s for s in saida if s)
