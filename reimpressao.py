@@ -151,9 +151,14 @@ def _lote(client, sns, falhas):
         if not prontos:
             continue
 
-        resp = _post(client, "/api/v2/logistics/download_shipping_document",
-                     {"shipping_document_type": tipo, "order_list": prontos}, timeout=120)
-        tipo_resp = resp.headers.get("Content-Type", "")
+        for _ in range(12):
+            resp = _post(client, "/api/v2/logistics/download_shipping_document",
+                         {"shipping_document_type": tipo, "order_list": prontos}, timeout=120)
+            tipo_resp = resp.headers.get("Content-Type", "")
+            if "json" in tipo_resp and "rocessing" in resp.text:
+                time.sleep(5)  # a Shopee ainda está montando o arquivo
+                continue
+            break
         if "json" in tipo_resp:
             erro = _json(resp)
             for o in prontos:
