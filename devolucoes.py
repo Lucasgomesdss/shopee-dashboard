@@ -4,8 +4,9 @@ Fluxo (projeto "Devoluções pelo rastreio"):
   rastreio -> pedido Shopee (banco do dashboard ou lista de devoluções da Shopee)
            -> pedido de venda no Bling (conta Ana) -> nota de saída (chave, itens, cliente)
 
-FASE 2 = SÓ CONSULTA. Nada aqui cria, emite ou altera nota no Bling, nem mexe no
-estoque. A geração das notas de devolução entra na fase 3, depois do teste.
+FASE 3: além da consulta, gera as notas de devolução selecionadas como RASCUNHO
+(situação Pendente) no Bling, copiando o modelo da última devolução feita à mão
+(ver devolucoes_gerar.py). Nada é enviado à Sefaz: a emissão continua no Bling.
 
 Acesso: só os logins JULIANA e LUCAS. A autorização do Bling (Conectar Bling) só LUCAS.
 """
@@ -19,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, flash, redirect, request, session, url_for
 
 import bling_client
+import devolucoes_gerar as gerar
 import models
 from layout_v2 import ICONES, render_page
 
@@ -39,6 +41,10 @@ ROTULOS = {
     ST_NAO_ACHOU: ("Rastreio não encontrado", "warn"),
     ST_SEM_NOTA: ("Sem nota no Bling", "warn"),
     ST_ERRO: ("Erro na consulta", "bad"),
+    gerar.ST_NA_FILA: ("Na fila para gerar", "warn"),
+    gerar.ST_GERANDO: ("Gerando nota…", "warn"),
+    gerar.ST_GERADO: ("Nota criada no Bling", "ok"),
+    gerar.ST_FALHOU: ("Falhou ao gerar", "bad"),
 }
 
 
@@ -420,14 +426,23 @@ def _somente_liberados():
 def painel():
     _sincronizar_em_fundo_se_preciso()
     devs = _listar()
+    fila = [d for d in devs if d["status"] in (gerar.ST_NA_FILA, gerar.ST_GERANDO)]
     resumo = {
         "total": len(devs),
         "prontos": sum(1 for d in devs if d["status"] == ST_PRONTO),
-        "problemas": sum(1 for d in devs if d["status"] != ST_PRONTO),
+        "gerados": sum(1 for d in devs if d["status"] == gerar.ST_GERADO),
+        "problemas": sum(1 for d in devs if d["status"] in (ST_NAO_ACHOU, ST_SEM_NOTA, ST_ERRO, gerar.ST_FALHOU)),
+        "fila": len(fila),
     }
+    modelo = None
+    try:
+        salvo = gerar._meta_ler("modelo_devolucao")
+        modelo = json.loads(salvo) if salvo else None
+    except Exception:
+        modelo = None
     return render_page(
         "Devoluções", "devolucoes", TEMPLATE,
-        devs=devs, resumo=resumo, ic=ICONES,
+        devs=devs, resumo=resumo, ic=ICONES, modelo=modelo,
         bling_configurado=bling_client.configurado(),
         bling_conectado=bling_client.conectado(),
         eh_lucas=session.get("employee_name") == "LUCAS",
@@ -459,11 +474,87 @@ def bipar():
     return redirect(url_for("devolucoes.painel"))
 
 
+@bp.route("/devolucoes/gerar", methods=["POST"])
+def gerar_selecionadas():
+    """Põe na fila as devoluções marcadas (com as quantidades ajustadas) e dispara a
+    geração em segundo plano. Cada nota é criada como rascunho no Bling."""
+    ids = [int(i) for i in request.form.getlist("ids") if str(i).isdigit()]
+    if not ids:
+        flash("Marque pelo menos uma devolução para gerar.")
+        return redirect(url_for("devolucoes.painel"))
+    try:
+        gerar.obter_modelo()
+    except Exception as e:
+        flash(f"Não consegui preparar o modelo da nota: {e}")
+        return redirect(url_for("devolucoes.painel"))
+    postos = 0
+    with models.get_conn() as conn:
+        for dev_id in ids:
+            dev = conn.execute(
+                "SELECT status, nfe_devolucao_id FROM devolucoes WHERE id = ? AND removido = 0", (dev_id,)
+            ).fetchone()
+            if not dev or dev["nfe_devolucao_id"] or dev["status"] not in (ST_PRONTO, gerar.ST_FALHOU):
+                continue
+            itens = conn.execute(
+                "SELECT id, qtd_original FROM devolucao_itens WHERE devolucao_id = ?", (dev_id,)
+            ).fetchall()
+            total = 0.0
+            for it in itens:
+                bruto = request.form.get(f"qtd_{it['id']}")
+                try:
+                    qtd = float(str(bruto).replace(",", ".")) if bruto not in (None, "") else float(it["qtd_original"] or 0)
+                except ValueError:
+                    qtd = float(it["qtd_original"] or 0)
+                qtd = max(0.0, min(qtd, float(it["qtd_original"] or 0)))
+                total += qtd
+                conn.execute("UPDATE devolucao_itens SET qtd_devolver = ? WHERE id = ?", (qtd, it["id"]))
+            if total <= 0:
+                continue
+            conn.execute(
+                "UPDATE devolucoes SET status = ?, motivo = NULL, updated_at = ? WHERE id = ?",
+                (gerar.ST_NA_FILA, _agora(), dev_id),
+            )
+            postos += 1
+    if postos:
+        gerar.iniciar_fila()
+        flash(f"{postos} devolução(ões) na fila. As notas vão aparecer no Bling como Pendente.")
+    else:
+        flash("Nenhuma devolução marcada estava pronta para gerar.")
+    return redirect(url_for("devolucoes.painel"))
+
+
+@bp.route("/devolucoes/<int:dev_id>/previa")
+def previa(dev_id):
+    """Mostra o que seria enviado ao Bling, sem criar nada."""
+    try:
+        corpo = gerar.corpo_para(dev_id)
+        modelo = gerar.obter_modelo()
+        erro = None
+    except Exception as e:
+        corpo, modelo, erro = None, None, str(e)
+    return render_page(
+        "Prévia da devolução", "devolucoes", TEMPLATE_PREVIA,
+        corpo=json.dumps(corpo, ensure_ascii=False, indent=2) if corpo else "",
+        modelo=modelo, erro=erro, ic=ICONES,
+    )
+
+
+@bp.route("/devolucoes/modelo/atualizar", methods=["POST"])
+def atualizar_modelo():
+    try:
+        m = gerar.obter_modelo(forcar=True)
+        flash(f"Modelo atualizado: nota de devolução {m.get('numero')} ({m.get('cliente')}).")
+    except Exception as e:
+        flash(f"Não consegui atualizar o modelo: {e}")
+    return redirect(url_for("devolucoes.painel"))
+
+
 @bp.route("/devolucoes/<int:dev_id>/remover", methods=["POST"])
 def remover(dev_id):
     with models.get_conn() as conn:
         conn.execute(
-            "UPDATE devolucoes SET removido = 1, updated_at = ? WHERE id = ? AND nfe_devolucao_id IS NULL",
+            "UPDATE devolucoes SET removido = 1, updated_at = ? WHERE id = ? AND nfe_devolucao_id IS NULL "
+            "AND status NOT IN ('na_fila', 'gerando')",
             (_agora(), dev_id),
         )
     flash("Removido da lista.")
@@ -524,22 +615,28 @@ TEMPLATE = """
 .dv-tag.ok{background:#d9f3e6;color:#0d6b3f}
 .dv-tag.warn{background:#fff1cc;color:#7a5300}
 .dv-tag.bad{background:#fde0e0;color:#9b1c1c}
-.dv-row{border-top:1px solid #e3e6ec;padding:14px 0;display:grid;grid-template-columns:150px 1fr auto;gap:14px;align-items:start}
+.dv-row{border-top:1px solid #e3e6ec;padding:14px 0;display:grid;grid-template-columns:28px 150px 1fr auto;gap:14px;align-items:start}
 .dv-row:first-of-type{border-top:0}
+.dv-row input[type=checkbox]{width:20px;height:20px;margin-top:2px;cursor:pointer}
 .dv-mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
 .dv-sub{font-size:12px;color:#5b6474;margin-top:3px}
 .dv-itens{margin:8px 0 0;padding:0;list-style:none;font-size:13px}
-.dv-itens li{padding:2px 0}
+.dv-itens li{padding:3px 0;display:flex;align-items:center;gap:6px}
+.dv-qtd{width:58px;font:inherit;padding:3px 6px;border:1px solid #c7ccd6;border-radius:8px;text-align:center}
 .dv-acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .dv-wrap .v2-panel{margin-bottom:18px}
 .dv-aviso{background:#fff;border-left:4px solid #fdd32b;border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:14px}
-@media (max-width:700px){.dv-row{grid-template-columns:1fr}.dv-acts{justify-content:flex-start}}
+.dv-bar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.dv-ok{color:#0d6b3f;font-weight:600}
+.dv-cards4{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:700px){.dv-row{grid-template-columns:28px 1fr}.dv-row>div:nth-child(3),.dv-row>div:nth-child(4){grid-column:2}.dv-acts{justify-content:flex-start}.dv-cards4{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
+{% if resumo.fila %}<meta http-equiv="refresh" content="3">{% endif %}
 <div class="dv-wrap" style="max-width:1100px">
   <div class="v2-h">
     <div>
-      <h1>Devoluções <span class="v2-badge">fase de teste: só consulta</span></h1>
-      <div class="v2-sub">Bipe a etiqueta do pacote que voltou. O sistema acha o pedido e a nota de saída no Bling. Nenhuma nota é criada nesta fase.</div>
+      <h1>Devoluções</h1>
+      <div class="v2-sub">Bipe a etiqueta do pacote que voltou, confira os itens e gere as notas. Elas são criadas no Bling como <b>Pendente</b>; a emissão é feita no Bling, em "Enviar notas pendentes".</div>
     </div>
   </div>
 
@@ -552,6 +649,10 @@ TEMPLATE = """
   </div>
   {% endif %}
 
+  {% if resumo.fila %}
+  <div class="dv-aviso"><b>Gerando notas…</b> faltam {{ resumo.fila }}. A página atualiza sozinha.</div>
+  {% endif %}
+
   <div class="v2-panel">
     <form class="dv-scan" method="post" action="{{ url_for('devolucoes.bipar') }}">
       <input name="rastreio" placeholder="Bipe ou digite o rastreio da etiqueta" autocomplete="off" autofocus {% if not bling_conectado %}disabled{% endif %}>
@@ -559,17 +660,29 @@ TEMPLATE = """
     </form>
   </div>
 
-  <div class="v2-cards">
+  <div class="v2-cards dv-cards4">
     <div class="v2-card"><div><div class="l">Na lista</div><div class="n">{{ resumo.total }}</div></div></div>
-    <div class="v2-card" style="border-color:#1baf7a"><div><div class="l">Prontos</div><div class="n">{{ resumo.prontos }}</div></div></div>
+    <div class="v2-card" style="border-color:#2a78d6"><div><div class="l">Prontos para gerar</div><div class="n">{{ resumo.prontos }}</div></div></div>
+    <div class="v2-card" style="border-color:#1baf7a"><div><div class="l">Notas criadas</div><div class="n">{{ resumo.gerados }}</div></div></div>
     <div class="v2-card" style="border-color:#eb6834"><div><div class="l">Com problema</div><div class="n">{{ resumo.problemas }}</div></div></div>
   </div>
 
+  <form id="fgerar" method="post" action="{{ url_for('devolucoes.gerar_selecionadas') }}"></form>
   <div class="v2-panel">
-    <h3>Devoluções a gerar</h3>
+    <div class="dv-bar">
+      <h3 style="margin:0">Devoluções a gerar</h3>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <label class="dv-sub" style="margin:0;cursor:pointer"><input type="checkbox" id="dv-todos"> marcar todos os prontos</label>
+        <button class="v2-btn" type="submit" form="fgerar" onclick="return confirm('Criar as notas de devolução marcadas no Bling (como Pendente)?')">Gerar notas de devolução</button>
+      </div>
+    </div>
+    {% if modelo %}<div class="dv-sub" style="margin-bottom:6px">Modelo usado: nota de devolução {{ modelo.numero }} ({{ modelo.cliente }}).
+      <form method="post" action="{{ url_for('devolucoes.atualizar_modelo') }}" style="display:inline"><button class="v2-btn sec" type="submit" style="padding:2px 8px">atualizar modelo</button></form></div>{% endif %}
     {% if not devs %}<p class="v2-sub">Nenhum pacote bipado ainda.</p>{% endif %}
     {% for d in devs %}
+    {% set pode = d.status in ('pronto', 'falhou') and not d.nfe_devolucao_id %}
     <div class="dv-row">
+      <div>{% if pode %}<input type="checkbox" name="ids" value="{{ d.id }}" form="fgerar" class="dv-sel{% if d.status == 'pronto' %} dv-pronto{% endif %}">{% endif %}</div>
       <div>
         <div class="dv-mono"><b>{{ d.rastreio }}</b></div>
         <div class="dv-sub">{{ d.quando }} · {{ d.bipado_por or '' }}</div>
@@ -580,20 +693,51 @@ TEMPLATE = """
         {% if d.cliente_nome %}<div class="dv-sub">{{ d.cliente_nome }}{% if d.cliente_doc %} · {{ d.cliente_doc }}{% endif %}</div>{% endif %}
         {% if d.nfe_numero %}<div class="dv-sub">Nota de saída {{ d.nfe_numero }}{% if d.nfe_serie %}/{{ d.nfe_serie }}{% endif %}{% if d.total %} · R$ {{ '%.2f'|format(d.total)|replace('.', ',') }}{% endif %}</div>
         <div class="dv-sub dv-mono">{{ d.nfe_chave }}</div>{% endif %}
+        {% if d.nfe_devolucao_id %}<div class="dv-ok" style="margin-top:4px">Nota de devolução nº {{ d.nfe_devolucao_numero }} criada no Bling (Pendente). Emita pelo Bling.</div>{% endif %}
         {% if d.motivo %}<div class="dv-sub" style="color:#9b1c1c">{{ d.motivo }}</div>{% endif %}
         {% if d.itens %}<ul class="dv-itens">
-          {% for it in d.itens %}<li>{{ (it.qtd_original or 0)|round(0)|int }} × {{ it.descricao }} <span class="dv-sub">{{ it.codigo }}</span></li>{% endfor %}
+          {% for it in d.itens %}<li>
+            {% if pode %}<input class="dv-qtd" type="number" name="qtd_{{ it.id }}" form="fgerar" min="0" max="{{ (it.qtd_original or 0)|round(0)|int }}" step="1" value="{{ (it.qtd_devolver if it.qtd_devolver is not none else it.qtd_original)|round(0)|int }}" title="Quantidade que voltou">
+            <span class="dv-sub">de {{ (it.qtd_original or 0)|round(0)|int }} ×</span>
+            {% else %}{{ ((it.qtd_devolver if d.nfe_devolucao_id else it.qtd_original) or 0)|round(0)|int }} ×{% endif %}
+            {{ it.descricao }} <span class="dv-sub">{{ it.codigo }}</span></li>{% endfor %}
         </ul>{% endif %}
       </div>
       <div class="dv-acts">
-        {% if d.status != 'pronto' %}
+        {% if pode %}<a class="v2-btn sec" href="{{ url_for('devolucoes.previa', dev_id=d.id) }}">Ver prévia</a>{% endif %}
+        {% if d.status in ('nao_encontrado', 'sem_nota', 'erro') %}
         <form method="post" action="{{ url_for('devolucoes.reconsultar', dev_id=d.id) }}"><button class="v2-btn sec" type="submit">Consultar de novo</button></form>
         {% endif %}
+        {% if not d.nfe_devolucao_id and d.status not in ('na_fila', 'gerando') %}
         <form method="post" action="{{ url_for('devolucoes.remover', dev_id=d.id) }}"><button class="v2-btn sec" type="submit">Remover</button></form>
+        {% endif %}
       </div>
     </div>
     {% endfor %}
   </div>
+</div>
+<script>
+(function(){
+  var t=document.getElementById('dv-todos');
+  if(t) t.addEventListener('change',function(){
+    document.querySelectorAll('.dv-pronto').forEach(function(c){c.checked=t.checked;});
+  });
+})();
+</script>
+"""
+
+
+TEMPLATE_PREVIA = """
+<div style="max-width:1000px">
+  <div class="v2-h"><div>
+    <h1>Prévia da nota de devolução</h1>
+    <div class="v2-sub">É isto que será enviado ao Bling ao gerar. Nada foi criado.</div>
+  </div><a class="v2-btn sec" href="{{ url_for('devolucoes.painel') }}">Voltar</a></div>
+  {% if erro %}<div class="v2-panel" style="color:#9b1c1c">{{ erro }}</div>{% endif %}
+  {% if modelo %}<div class="v2-panel" style="margin-bottom:16px;font-size:14px">
+    Modelo: nota de devolução <b>{{ modelo.numero }}</b> ({{ modelo.cliente }}) · natureza {{ modelo.natureza_id }} · loja {{ modelo.loja_id }} · CFOP final {{ modelo.cfop_final or '—' }}
+  </div>{% endif %}
+  {% if corpo %}<div class="v2-panel"><pre style="white-space:pre-wrap;font-size:12px;margin:0">{{ corpo }}</pre></div>{% endif %}
 </div>
 """
 
@@ -603,3 +747,7 @@ def init_app(app, get_shopee_client):
     bling_client.init_db()
     init_db()
     app.register_blueprint(bp)
+    try:
+        gerar.retomar_se_preciso()
+    except Exception:
+        pass

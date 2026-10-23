@@ -5,8 +5,9 @@ aqui nunca derrube o faturamento. Credenciais em variáveis de ambiente no Rende
 BLING_CLIENT_ID e BLING_CLIENT_SECRET. O token fica salvo no banco (tabela
 bling_tokens, uma linha só) e se renova sozinho.
 
-Fase 2: somente LEITURA (pedidos de venda e notas fiscais). Este módulo não tem
-nenhuma função que crie, altere, emita ou exclua nada no Bling.
+Fase 3: lê pedidos e notas, e CRIA notas de devolução como rascunho (situação
+Pendente). Nunca envia nota à Sefaz (o app nem tem esse escopo), nunca altera nem
+exclui nota existente e nunca lança estoque.
 """
 
 import base64
@@ -153,6 +154,49 @@ def _get(caminho, params=None):
         msg = erro.get("description") or erro.get("message") if isinstance(erro, dict) else str(erro)
         raise BlingErro(msg or f"HTTP {resp.status_code}")
     return dados
+
+
+def _post(caminho, corpo):
+    """POST na API do Bling (usado só para criar a nota de devolução em rascunho)."""
+    espera = 0.36 - (time.time() - _ultima_chamada[0])
+    if espera > 0:
+        time.sleep(espera)
+    for tentativa in range(3):
+        _ultima_chamada[0] = time.time()
+        resp = _session.post(
+            f"{API_BASE}/{caminho}",
+            json=corpo,
+            headers={"Authorization": f"Bearer {_access_token()}", "Accept": "application/json"},
+            timeout=30,
+        )
+        if resp.status_code == 429 and tentativa < 2:
+            time.sleep(1.5)
+            continue
+        break
+    try:
+        dados = resp.json()
+    except ValueError:
+        raise BlingErro(f"Resposta inválida do Bling (HTTP {resp.status_code}).")
+    if resp.status_code >= 400:
+        erro = dados.get("error") or {}
+        if not isinstance(erro, dict):
+            raise BlingErro(str(erro))
+        partes = [erro.get("description") or erro.get("message") or f"HTTP {resp.status_code}"]
+        for campo in erro.get("fields") or []:
+            msg = campo.get("msg") or campo.get("message")
+            if msg:
+                partes.append(msg)
+        raise BlingErro(" | ".join(partes))
+    return dados
+
+
+def criar_nfe(corpo):
+    """Cria a NF-e (rascunho, situação Pendente). Devolve {'id','numero','serie',...}."""
+    return _post("nfe", corpo).get("data") or {}
+
+
+def listar_nfes(params):
+    return _get("nfe", params=params).get("data") or []
 
 
 def buscar_pedido_por_numero_loja(order_sn):
