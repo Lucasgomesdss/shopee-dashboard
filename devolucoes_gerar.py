@@ -33,6 +33,13 @@ ST_NA_FILA = "na_fila"
 ST_GERANDO = "gerando"
 ST_GERADO = "gerado"
 ST_FALHOU = "falhou"
+ST_EMITIDA = "emitida"          # autorizada pela Sefaz
+ST_REJEITADA = "rejeitada"      # criada, mas a Sefaz recusou
+
+# Situações do Bling para a nota de devolução depois do envio
+SITUACOES_AUTORIZADA = {5, 6, 7}
+SITUACOES_RECUSA = {4, 9}       # Rejeitada, Denegada
+FRETE_TERCEIROS = 2             # "2 - Frete por conta de Terceiros", como na nota feita à mão
 
 _job_lock = threading.Lock()
 
@@ -235,8 +242,7 @@ def montar_corpo(dev, itens_dev, original, modelo):
         corpo["loja"] = {"id": loja_id}
     if modelo.get("intermediador"):
         corpo["intermediador"] = modelo["intermediador"]
-    if modelo.get("frete_por_conta") is not None:
-        corpo["transporte"] = {"fretePorConta": modelo["frete_por_conta"]}
+    corpo["transporte"] = {"fretePorConta": FRETE_TERCEIROS}
     if modelo.get("forma_pagamento_id"):
         corpo["parcelas"][0]["formaPagamento"] = {"id": modelo["forma_pagamento_id"]}
     return corpo
@@ -296,6 +302,59 @@ def gerar_uma(dev_id):
         dev_id, status=ST_GERADO, motivo=None,
         nfe_devolucao_id=criada.get("id"), nfe_devolucao_numero=str(criada.get("numero") or ""),
     )
+    emitir(dev_id)
+
+
+def emitir(dev_id):
+    """Envia à Sefaz a nota de devolução já criada e acompanha até autorizar/rejeitar."""
+    with models.get_conn() as conn:
+        dev = conn.execute("SELECT * FROM devolucoes WHERE id = ?", (dev_id,)).fetchone()
+    if not dev or not dev["nfe_devolucao_id"] or dev["status"] == ST_EMITIDA:
+        return
+    nfe_id = dev["nfe_devolucao_id"]
+    try:
+        bling_client.enviar_nfe(nfe_id)
+    except Exception as e:
+        _atualizar(dev_id, status=ST_GERADO,
+                   motivo=f"Criada como Pendente, mas o envio à Sefaz falhou: {e}")
+        return
+    situacao = None
+    for _ in range(10):  # até ~30 s esperando a Sefaz responder
+        time.sleep(3)
+        try:
+            situacao = int(bling_client.detalhe_nfe(nfe_id).get("situacao") or 0)
+        except Exception:
+            continue
+        if situacao in SITUACOES_AUTORIZADA or situacao in SITUACOES_RECUSA:
+            break
+    if situacao in SITUACOES_AUTORIZADA:
+        _atualizar(dev_id, status=ST_EMITIDA, motivo=None, nfe_devolucao_situacao=situacao)
+    elif situacao in SITUACOES_RECUSA:
+        nome = bling_client.NFE_SITUACOES.get(situacao, str(situacao))
+        _atualizar(dev_id, status=ST_REJEITADA, nfe_devolucao_situacao=situacao,
+                   motivo=f"Sefaz: nota {nome}. Veja o motivo no Bling, corrija e use 'Enviar à Sefaz'.")
+    else:
+        _atualizar(dev_id, status=ST_GERADO, nfe_devolucao_situacao=situacao,
+                   motivo="Enviada; a Sefaz ainda não respondeu. Confira no Bling ou use 'Atualizar situação'.")
+
+
+def atualizar_situacao(dev_id):
+    """Consulta no Bling a situação atual da nota de devolução (sem enviar nada)."""
+    with models.get_conn() as conn:
+        dev = conn.execute("SELECT * FROM devolucoes WHERE id = ?", (dev_id,)).fetchone()
+    if not dev or not dev["nfe_devolucao_id"]:
+        return
+    situacao = int(bling_client.detalhe_nfe(dev["nfe_devolucao_id"]).get("situacao") or 0)
+    if situacao in SITUACOES_AUTORIZADA:
+        _atualizar(dev_id, status=ST_EMITIDA, motivo=None, nfe_devolucao_situacao=situacao)
+    elif situacao in SITUACOES_RECUSA:
+        nome = bling_client.NFE_SITUACOES.get(situacao, str(situacao))
+        _atualizar(dev_id, status=ST_REJEITADA, nfe_devolucao_situacao=situacao,
+                   motivo=f"Sefaz: nota {nome}. Veja o motivo no Bling.")
+    else:
+        nome = bling_client.NFE_SITUACOES.get(situacao, str(situacao))
+        _atualizar(dev_id, status=ST_GERADO, nfe_devolucao_situacao=situacao,
+                   motivo=f"No Bling a nota está '{nome}'.")
 
 
 def _rodar_fila():
@@ -303,12 +362,18 @@ def _rodar_fila():
         while True:
             with models.get_conn() as conn:
                 row = conn.execute(
-                    "SELECT id FROM devolucoes WHERE status = ? AND removido = 0 ORDER BY id LIMIT 1",
+                    "SELECT id, nfe_devolucao_id FROM devolucoes WHERE status = ? AND removido = 0 "
+                    "ORDER BY id LIMIT 1",
                     (ST_NA_FILA,),
                 ).fetchone()
             if not row:
                 return
-            gerar_uma(row["id"])
+            if row["nfe_devolucao_id"]:
+                # Já criada antes: só reenviar à Sefaz.
+                _atualizar(row["id"], status=ST_GERANDO)
+                emitir(row["id"])
+            else:
+                gerar_uma(row["id"])
 
 
 def iniciar_fila():
@@ -320,7 +385,7 @@ def retomar_se_preciso():
     """Se o servidor reiniciou no meio de um lote, continua de onde parou."""
     with models.get_conn() as conn:
         conn.execute(
-            "UPDATE devolucoes SET status = ? WHERE status = ? AND nfe_devolucao_id IS NULL",
+            "UPDATE devolucoes SET status = ? WHERE status = ?",
             (ST_NA_FILA, ST_GERANDO),
         )
         tem = conn.execute(

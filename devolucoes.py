@@ -5,8 +5,8 @@ Fluxo (projeto "Devoluções pelo rastreio"):
            -> pedido de venda no Bling (conta Ana) -> nota de saída (chave, itens, cliente)
 
 FASE 3: além da consulta, gera as notas de devolução selecionadas como RASCUNHO
-(situação Pendente) no Bling, copiando o modelo da última devolução feita à mão
-(ver devolucoes_gerar.py). Nada é enviado à Sefaz: a emissão continua no Bling.
+no Bling, copiando o modelo da devolução feita à mão (ver devolucoes_gerar.py), e
+já envia cada uma à Sefaz, mostrando se foi autorizada ou rejeitada.
 
 Acesso: só os logins JULIANA e LUCAS. A autorização do Bling (Conectar Bling) só LUCAS.
 """
@@ -45,6 +45,8 @@ ROTULOS = {
     gerar.ST_GERANDO: ("Gerando nota…", "warn"),
     gerar.ST_GERADO: ("Nota criada no Bling", "ok"),
     gerar.ST_FALHOU: ("Falhou ao gerar", "bad"),
+    gerar.ST_EMITIDA: ("Autorizada na Sefaz", "ok"),
+    gerar.ST_REJEITADA: ("Rejeitada na Sefaz", "bad"),
 }
 
 
@@ -108,6 +110,9 @@ def init_db():
         conn.execute(
             "CREATE TABLE IF NOT EXISTS devolucoes_meta (chave TEXT PRIMARY KEY, valor TEXT)"
         )
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(devolucoes)").fetchall()]
+        if "nfe_devolucao_situacao" not in cols:
+            conn.execute("ALTER TABLE devolucoes ADD COLUMN nfe_devolucao_situacao INTEGER")
 
 
 def _agora():
@@ -430,8 +435,9 @@ def painel():
     resumo = {
         "total": len(devs),
         "prontos": sum(1 for d in devs if d["status"] == ST_PRONTO),
-        "gerados": sum(1 for d in devs if d["status"] == gerar.ST_GERADO),
-        "problemas": sum(1 for d in devs if d["status"] in (ST_NAO_ACHOU, ST_SEM_NOTA, ST_ERRO, gerar.ST_FALHOU)),
+        "gerados": sum(1 for d in devs if d["status"] in (gerar.ST_GERADO, gerar.ST_EMITIDA)),
+        "emitidas": sum(1 for d in devs if d["status"] == gerar.ST_EMITIDA),
+        "problemas": sum(1 for d in devs if d["status"] in (ST_NAO_ACHOU, ST_SEM_NOTA, ST_ERRO, gerar.ST_FALHOU, gerar.ST_REJEITADA)),
         "fila": len(fila),
     }
     modelo = None
@@ -520,6 +526,30 @@ def gerar_selecionadas():
         flash(f"{postos} devolução(ões) na fila. As notas vão aparecer no Bling como Pendente.")
     else:
         flash("Nenhuma devolução marcada estava pronta para gerar.")
+    return redirect(url_for("devolucoes.painel"))
+
+
+@bp.route("/devolucoes/<int:dev_id>/enviar", methods=["POST"])
+def enviar_sefaz(dev_id):
+    """Reenvia à Sefaz uma nota de devolução já criada (pendente ou rejeitada e corrigida)."""
+    with models.get_conn() as conn:
+        row = conn.execute(
+            "SELECT nfe_devolucao_id, status FROM devolucoes WHERE id = ? AND removido = 0", (dev_id,)
+        ).fetchone()
+        if not row or not row["nfe_devolucao_id"] or row["status"] in (gerar.ST_EMITIDA, gerar.ST_NA_FILA, gerar.ST_GERANDO):
+            return redirect(url_for("devolucoes.painel"))
+        conn.execute("UPDATE devolucoes SET status = ?, motivo = NULL WHERE id = ?", (gerar.ST_NA_FILA, dev_id))
+    gerar.iniciar_fila()
+    flash("Enviando à Sefaz…")
+    return redirect(url_for("devolucoes.painel"))
+
+
+@bp.route("/devolucoes/<int:dev_id>/situacao", methods=["POST"])
+def atualizar_situacao(dev_id):
+    try:
+        gerar.atualizar_situacao(dev_id)
+    except Exception as e:
+        flash(f"Não consegui consultar o Bling: {e}")
     return redirect(url_for("devolucoes.painel"))
 
 
@@ -636,7 +666,7 @@ TEMPLATE = """
   <div class="v2-h">
     <div>
       <h1>Devoluções</h1>
-      <div class="v2-sub">Bipe a etiqueta do pacote que voltou, confira os itens e gere as notas. Elas são criadas no Bling como <b>Pendente</b>; a emissão é feita no Bling, em "Enviar notas pendentes".</div>
+      <div class="v2-sub">Bipe a etiqueta do pacote que voltou, confira os itens e gere as notas. Cada nota é criada no Bling e <b>enviada à Sefaz</b> na hora; a linha mostra se foi autorizada.</div>
     </div>
   </div>
 
@@ -648,6 +678,7 @@ TEMPLATE = """
     {% else %}Peça para o LUCAS conectar.{% endif %}
   </div>
   {% endif %}
+  {% if bling_conectado and eh_lucas %}<div class="dv-sub" style="margin:-6px 0 12px">Bling conectado. <a href="{{ url_for('devolucoes.bling_autorizar') }}">Reconectar</a> (use depois de mudar permissões do app no Bling).</div>{% endif %}
 
   {% if resumo.fila %}
   <div class="dv-aviso"><b>Gerando notas…</b> faltam {{ resumo.fila }}. A página atualiza sozinha.</div>
@@ -663,7 +694,7 @@ TEMPLATE = """
   <div class="v2-cards dv-cards4">
     <div class="v2-card"><div><div class="l">Na lista</div><div class="n">{{ resumo.total }}</div></div></div>
     <div class="v2-card" style="border-color:#2a78d6"><div><div class="l">Prontos para gerar</div><div class="n">{{ resumo.prontos }}</div></div></div>
-    <div class="v2-card" style="border-color:#1baf7a"><div><div class="l">Notas criadas</div><div class="n">{{ resumo.gerados }}</div></div></div>
+    <div class="v2-card" style="border-color:#1baf7a"><div><div class="l">Autorizadas na Sefaz</div><div class="n">{{ resumo.emitidas }}</div></div></div>
     <div class="v2-card" style="border-color:#eb6834"><div><div class="l">Com problema</div><div class="n">{{ resumo.problemas }}</div></div></div>
   </div>
 
@@ -673,7 +704,7 @@ TEMPLATE = """
       <h3 style="margin:0">Devoluções a gerar</h3>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <label class="dv-sub" style="margin:0;cursor:pointer"><input type="checkbox" id="dv-todos"> marcar todos os prontos</label>
-        <button class="v2-btn" type="submit" form="fgerar" onclick="return confirm('Criar as notas de devolução marcadas no Bling (como Pendente)?')">Gerar notas de devolução</button>
+        <button class="v2-btn" type="submit" form="fgerar" onclick="return confirm('Criar as notas de devolução marcadas e ENVIAR à Sefaz?')">Gerar notas de devolução</button>
       </div>
     </div>
     {% if modelo %}<div class="dv-sub" style="margin-bottom:6px">Modelo usado: nota de devolução {{ modelo.numero }} ({{ modelo.cliente }}).
@@ -693,7 +724,7 @@ TEMPLATE = """
         {% if d.cliente_nome %}<div class="dv-sub">{{ d.cliente_nome }}{% if d.cliente_doc %} · {{ d.cliente_doc }}{% endif %}</div>{% endif %}
         {% if d.nfe_numero %}<div class="dv-sub">Nota de saída {{ d.nfe_numero }}{% if d.nfe_serie %}/{{ d.nfe_serie }}{% endif %}{% if d.total %} · R$ {{ '%.2f'|format(d.total)|replace('.', ',') }}{% endif %}</div>
         <div class="dv-sub dv-mono">{{ d.nfe_chave }}</div>{% endif %}
-        {% if d.nfe_devolucao_id %}<div class="dv-ok" style="margin-top:4px">Nota de devolução nº {{ d.nfe_devolucao_numero }} criada no Bling (Pendente). Emita pelo Bling.</div>{% endif %}
+        {% if d.nfe_devolucao_id %}<div class="dv-ok" style="margin-top:4px{% if d.status != 'emitida' %};color:#7a5300{% endif %}">Nota de devolução nº {{ d.nfe_devolucao_numero }}{% if d.status == 'emitida' %} autorizada na Sefaz.{% elif d.status == 'rejeitada' %} rejeitada pela Sefaz.{% elif d.status in ('na_fila', 'gerando') %} enviando…{% else %} criada no Bling, ainda não autorizada.{% endif %}</div>{% endif %}
         {% if d.motivo %}<div class="dv-sub" style="color:#9b1c1c">{{ d.motivo }}</div>{% endif %}
         {% if d.itens %}<ul class="dv-itens">
           {% for it in d.itens %}<li>
@@ -705,6 +736,10 @@ TEMPLATE = """
       </div>
       <div class="dv-acts">
         {% if pode %}<a class="v2-btn sec" href="{{ url_for('devolucoes.previa', dev_id=d.id) }}">Ver prévia</a>{% endif %}
+        {% if d.nfe_devolucao_id and d.status in ('gerado', 'rejeitada') %}
+        <form method="post" action="{{ url_for('devolucoes.enviar_sefaz', dev_id=d.id) }}"><button class="v2-btn" type="submit">Enviar à Sefaz</button></form>
+        <form method="post" action="{{ url_for('devolucoes.atualizar_situacao', dev_id=d.id) }}"><button class="v2-btn sec" type="submit">Atualizar situação</button></form>
+        {% endif %}
         {% if d.status in ('nao_encontrado', 'sem_nota', 'erro') %}
         <form method="post" action="{{ url_for('devolucoes.reconsultar', dev_id=d.id) }}"><button class="v2-btn sec" type="submit">Consultar de novo</button></form>
         {% endif %}

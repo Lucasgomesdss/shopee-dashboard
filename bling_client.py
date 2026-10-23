@@ -5,9 +5,10 @@ aqui nunca derrube o faturamento. Credenciais em variáveis de ambiente no Rende
 BLING_CLIENT_ID e BLING_CLIENT_SECRET. O token fica salvo no banco (tabela
 bling_tokens, uma linha só) e se renova sozinho.
 
-Fase 3: lê pedidos e notas, e CRIA notas de devolução como rascunho (situação
-Pendente). Nunca envia nota à Sefaz (o app nem tem esse escopo), nunca altera nem
-exclui nota existente e nunca lança estoque.
+Fase 3: lê pedidos e notas, CRIA notas de devolução e as ENVIA à Sefaz (escopo
+"Emissão de NF-e", liberado pelo Lucas em 23/10/2026). Nunca altera nem exclui nota
+existente e nunca lança estoque por conta própria (o estoque segue a natureza de
+operação, como na nota feita à mão).
 """
 
 import base64
@@ -193,6 +194,11 @@ def _post(caminho, corpo):
 def criar_nfe(corpo):
     """Cria a NF-e (rascunho, situação Pendente). Devolve {'id','numero','serie',...}."""
     return _post("nfe", corpo).get("data") or {}
+
+
+def enviar_nfe(nfe_id):
+    """Transmite a nota à Sefaz (POST /nfe/{id}/enviar)."""
+    return _post(f"nfe/{nfe_id}/enviar", {})
 
 
 def listar_nfes(params):
