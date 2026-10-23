@@ -17,7 +17,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from flask import Blueprint, flash, redirect, request, session, url_for
+from flask import Blueprint, flash, jsonify, redirect, request, session, url_for
 
 import bling_client
 import devolucoes_gerar as gerar
@@ -54,6 +54,11 @@ ROTULOS = {
 
 def init_db():
     with models.get_conn() as conn:
+        # WAL: leituras (bipagem, telas) não esperam as gravações das devoluções.
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except Exception:
+            pass
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS devolucoes (
@@ -122,7 +127,9 @@ def _agora():
 def _listar():
     with models.get_conn() as conn:
         devs = [dict(r) for r in conn.execute(
-            "SELECT * FROM devolucoes WHERE removido = 0 ORDER BY id DESC LIMIT 300"
+            "SELECT * FROM devolucoes WHERE removido = 0 AND (status NOT IN ('emitida') "
+            "OR created_at >= ?) ORDER BY id DESC LIMIT 80",
+            ((datetime.utcnow() - timedelta(hours=24)).isoformat(),),
         ).fetchall()]
         if devs:
             ids = [d["id"] for d in devs]
@@ -261,6 +268,7 @@ def _baixar_janela(client, ini, fim, campo):
             salvos += len(linhas)
         if not corpo.get("more"):
             break
+        time.sleep(0.3)  # folga para o servidor atender as outras telas
     return salvos
 
 
@@ -274,9 +282,7 @@ def sincronizar_devolucoes_shopee(forcar=False):
     if client is None:
         return False
     if not _sync_lock.acquire(blocking=False):
-        # Outra atualização já está rodando: espera ela terminar (até 90 s) e usa o resultado.
-        if _sync_lock.acquire(timeout=90):
-            _sync_lock.release()
+        # Outra atualização já está rodando: não espera (não segura o servidor).
         return True
     try:
         agora = int(time.time())
@@ -306,11 +312,13 @@ def sincronizar_devolucoes_shopee(forcar=False):
 
 
 def _sincronizar_em_fundo_se_preciso():
+    """Só a PRIMEIRA carga (60 dias) roda em segundo plano ao abrir a tela. Depois disso
+    a lista é atualizada apenas quando uma bipagem não acha o rastreio no cache."""
     try:
-        ultima_em = int(float(_meta_ler("shopee_ret_sync_em") or 0))
+        ja_teve = _meta_ler("shopee_ret_sync_ate")
     except Exception:
-        ultima_em = 0
-    if time.time() - ultima_em > SYNC_FUNDO_INTERVALO and not _sync_lock.locked():
+        ja_teve = "1"
+    if not ja_teve and not _sync_lock.locked():
         threading.Thread(target=sincronizar_devolucoes_shopee, daemon=True).start()
 
 
@@ -453,6 +461,16 @@ def painel():
         bling_conectado=bling_client.conectado(),
         eh_lucas=session.get("employee_name") == "LUCAS",
     )
+
+
+@bp.route("/devolucoes/fila")
+def fila():
+    """Consulta leve (sem montar a página) usada pela tela enquanto há notas sendo geradas."""
+    with models.get_conn() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM devolucoes WHERE removido = 0 AND status IN ('na_fila', 'gerando')"
+        ).fetchone()[0]
+    return jsonify({"fila": n})
 
 
 @bp.route("/devolucoes/bipar", methods=["POST"])
@@ -661,7 +679,7 @@ TEMPLATE = """
 .dv-cards4{grid-template-columns:repeat(4,minmax(0,1fr))}
 @media (max-width:700px){.dv-row{grid-template-columns:28px 1fr}.dv-row>div:nth-child(3),.dv-row>div:nth-child(4){grid-column:2}.dv-acts{justify-content:flex-start}.dv-cards4{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
-{% if resumo.fila %}<meta http-equiv="refresh" content="3">{% endif %}
+
 <div class="dv-wrap" style="max-width:1100px">
   <div class="v2-h">
     <div>
@@ -681,7 +699,7 @@ TEMPLATE = """
   {% if bling_conectado and eh_lucas %}<div class="dv-sub" style="margin:-6px 0 12px">Bling conectado. <a href="{{ url_for('devolucoes.bling_autorizar') }}">Reconectar</a> (use depois de mudar permissões do app no Bling).</div>{% endif %}
 
   {% if resumo.fila %}
-  <div class="dv-aviso"><b>Gerando notas…</b> faltam {{ resumo.fila }}. A página atualiza sozinha.</div>
+  <div class="dv-aviso"><b>Gerando notas…</b> faltam {{ resumo.fila }}. A página atualiza quando terminar (pode continuar usando o dashboard).</div>
   {% endif %}
 
   <div class="v2-panel">
@@ -753,6 +771,15 @@ TEMPLATE = """
 </div>
 <script>
 (function(){
+  var fila = {{ resumo.fila }};
+  if (fila > 0) {
+    var timer = setInterval(function(){
+      if (document.hidden) return;
+      fetch('{{ url_for('devolucoes.fila') }}', {cache: 'no-store'}).then(function(r){ return r.json(); }).then(function(j){
+        if (j.fila !== fila) { clearInterval(timer); location.reload(); }
+      }).catch(function(){});
+    }, 8000);
+  }
   var t=document.getElementById('dv-todos');
   if(t) t.addEventListener('change',function(){
     document.querySelectorAll('.dv-pronto').forEach(function(c){c.checked=t.checked;});
