@@ -298,8 +298,9 @@ def gerar_uma(dev_id):
     if not criada.get("id"):
         _atualizar(dev_id, status=ST_FALHOU, motivo="O Bling não devolveu o número da nota criada.")
         return
+    # Continua "gerando" até a Sefaz responder (a tela só considera pronto no fim).
     _atualizar(
-        dev_id, status=ST_GERADO, motivo=None,
+        dev_id, status=ST_GERANDO, motivo=None,
         nfe_devolucao_id=criada.get("id"), nfe_devolucao_numero=str(criada.get("numero") or ""),
     )
     emitir(dev_id)
@@ -368,12 +369,23 @@ def _rodar_fila():
                 ).fetchone()
             if not row:
                 return
-            if row["nfe_devolucao_id"]:
-                # Já criada antes: só reenviar à Sefaz.
-                _atualizar(row["id"], status=ST_GERANDO)
-                emitir(row["id"])
-            else:
-                gerar_uma(row["id"])
+            try:
+                if row["nfe_devolucao_id"]:
+                    # Já criada antes: só reenviar à Sefaz.
+                    _atualizar(row["id"], status=ST_GERANDO)
+                    emitir(row["id"])
+                else:
+                    gerar_uma(row["id"])
+            except Exception as e:
+                _atualizar(row["id"], status=ST_FALHOU, motivo=f"Erro inesperado: {e}")
+            # Trava de segurança: nunca deixa a mesma linha na fila (evita laço infinito).
+            with models.get_conn() as conn:
+                ainda = conn.execute(
+                    "SELECT status FROM devolucoes WHERE id = ?", (row["id"],)
+                ).fetchone()
+            if ainda and ainda["status"] in (ST_NA_FILA, ST_GERANDO):
+                _atualizar(row["id"], status=ST_FALHOU, motivo="Não foi possível processar; tente de novo.")
+            time.sleep(0.5)  # folga para o servidor atender as outras telas
 
 
 def iniciar_fila():
