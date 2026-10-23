@@ -110,6 +110,8 @@ def inject_daily_phrase():
 def ensure_employee_name():
     if request.endpoint in ("set_name", "logout", "static", "shopee_callback"):
         return
+    if (request.endpoint or "").startswith("interno."):
+        return  # canal interno para o serviço de Devoluções (protegido por INTERNO_TOKEN)
     if not get_employee_name():
         return redirect(url_for("set_name", next=request.path))
 
@@ -519,9 +521,26 @@ import desempenho
 
 desempenho.init_app(app)
 
-import devolucoes
+import interno
 
-devolucoes.init_app(app, get_shopee_client)
+interno.init_app(app, get_shopee_client)
+
+# Devoluções: se DEVOLUCOES_URL estiver configurada, elas rodam num serviço próprio
+# (separado da separação) e aqui fica só o link no menu. Sem ela, rodam aqui dentro.
+DEVOLUCOES_URL = os.environ.get("DEVOLUCOES_URL", "").rstrip("/")
+
+
+@app.context_processor
+def inject_devolucoes_link():
+    if DEVOLUCOES_URL:
+        return {"devolucoes_link": DEVOLUCOES_URL + "/devolucoes"}
+    return {"devolucoes_link": url_for("devolucoes.painel")}
+
+
+if not DEVOLUCOES_URL:
+    import devolucoes
+
+    devolucoes.init_app(app, get_shopee_client)
 
 
 if __name__ == "__main__":
