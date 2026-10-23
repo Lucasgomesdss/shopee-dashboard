@@ -10,6 +10,7 @@ original saem cliente, itens, preços, desconto e a chave referenciada.
 """
 
 import json
+import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -78,8 +79,23 @@ def _resumir_modelo(nfe):
     }
 
 
+# Nota de devolução feita à mão que conferimos juntos (nº 692571, conta Ana).
+# Pode ser trocada pela variável BLING_MODELO_DEVOLUCAO_ID no Render.
+MODELO_PADRAO_ID = 27207693811
+
+
+def _serve_de_modelo(nfe):
+    """Nota de entrada com natureza de operação. A finalidade, quando vem, tem que ser 4."""
+    if str(nfe.get("tipo")) not in ("0", "None"):
+        return False
+    if not (nfe.get("naturezaOperacao") or {}).get("id"):
+        return False
+    fin = nfe.get("finalidade")
+    return fin in (None, "") or str(fin) == str(FINALIDADE_DEVOLUCAO)
+
+
 def obter_modelo(forcar=False):
-    """Acha (e guarda) a última nota de devolução feita no Bling para usar de modelo."""
+    """Acha (e guarda) a nota de devolução feita à mão que serve de modelo."""
     if not forcar:
         salvo = _meta_ler("modelo_devolucao")
         if salvo:
@@ -87,26 +103,35 @@ def obter_modelo(forcar=False):
                 return json.loads(salvo)
             except ValueError:
                 pass
-    vistos = 0
-    for pagina in range(1, 4):
-        lista = bling_client.listar_nfes({"tipo": "0", "pagina": pagina, "limite": 100})
-        if not lista:
-            break
-        for item in lista:
-            if item.get("situacao") not in bling_client.NFE_AUTORIZADAS:
-                continue
-            vistos += 1
-            if vistos > 12:
-                break
+    vistos = []
+    # 1) Nota fixa (variável no Render ou a 692571).
+    for candidato in (os.environ.get("BLING_MODELO_DEVOLUCAO_ID"), MODELO_PADRAO_ID):
+        if not candidato:
+            continue
+        try:
+            nfe = bling_client.detalhe_nfe(int(candidato))
+        except Exception as e:
+            vistos.append(f"{candidato}: {e}")
+            continue
+        if nfe and _serve_de_modelo(nfe):
+            modelo = _resumir_modelo(nfe)
+            _meta_gravar("modelo_devolucao", json.dumps(modelo, ensure_ascii=False))
+            return modelo
+        vistos.append(f"{candidato}: tipo={nfe.get('tipo')} finalidade={nfe.get('finalidade')}")
+    # 2) Procura entre as notas de entrada mais recentes.
+    for item in bling_client.listar_nfes({"tipo": "0", "pagina": 1, "limite": 100})[:12]:
+        try:
             nfe = bling_client.detalhe_nfe(item["id"])
-            if int(nfe.get("finalidade") or 0) == FINALIDADE_DEVOLUCAO and (nfe.get("naturezaOperacao") or {}).get("id"):
-                modelo = _resumir_modelo(nfe)
-                _meta_gravar("modelo_devolucao", json.dumps(modelo, ensure_ascii=False))
-                return modelo
-        if vistos > 12:
-            break
+        except Exception as e:
+            vistos.append(f"{item.get('id')}: {e}")
+            continue
+        if _serve_de_modelo(nfe) and str(nfe.get("finalidade")) == str(FINALIDADE_DEVOLUCAO):
+            modelo = _resumir_modelo(nfe)
+            _meta_gravar("modelo_devolucao", json.dumps(modelo, ensure_ascii=False))
+            return modelo
+        vistos.append(f"{nfe.get('numero')}: tipo={nfe.get('tipo')} finalidade={nfe.get('finalidade')}")
     raise bling_client.BlingErro(
-        "Não achei no Bling uma nota de devolução feita à mão para usar de modelo."
+        "Não achei a nota de devolução modelo. O Bling respondeu: " + "; ".join(vistos[:6])
     )
 
 
