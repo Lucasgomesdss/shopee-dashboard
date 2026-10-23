@@ -31,6 +31,8 @@ BRT = timezone(timedelta(hours=-3))
 LIBERADOS = {"JULIANA", "LUCAS"}
 DIAS_DEVOLUCOES_SHOPEE = 60   # quanto tempo para trás procurar na lista de devoluções
 _get_shopee = [None]
+_render = [render_page]      # layout: o do dashboard, ou o do serviço próprio de Devoluções
+_home = ["dashboard"]        # para onde mandar quem não tem acesso
 
 ST_PRONTO = "pronto"
 ST_NAO_ACHOU = "nao_encontrado"
@@ -366,6 +368,15 @@ def consultar(rastreio):
         if sn:
             reg["order_sn"], reg["origem"] = sn, "devoluções Shopee"
     if not reg.get("order_sn"):
+        # Pedido recente que ainda não entrou no histórico: busca só o que é novo e tenta de novo.
+        try:
+            if historico.rodar_incremental():
+                sn = historico.buscar(rastreio)
+                if sn:
+                    reg["order_sn"], reg["origem"] = sn, "histórico"
+        except Exception:
+            pass
+    if not reg.get("order_sn"):
         reg["status"] = ST_NAO_ACHOU
         reg["motivo"] = "Não está no banco do dashboard, no histórico desde junho nem na lista de devoluções da Shopee."
         return reg, itens
@@ -452,7 +463,7 @@ def _somente_liberados():
         return None
     if session.get("employee_name") not in LIBERADOS:
         flash("A tela Devoluções é liberada só para JULIANA e LUCAS.")
-        return redirect(url_for("dashboard"))
+        return redirect(url_for(_home[0]))
     return None
 
 
@@ -475,7 +486,7 @@ def painel():
         modelo = json.loads(salvo) if salvo else None
     except Exception:
         modelo = None
-    return render_page(
+    return _render[0](
         "Devoluções", "devolucoes", TEMPLATE,
         devs=devs, resumo=resumo, ic=ICONES, modelo=modelo,
         hist=historico.situacao() if session.get("employee_name") == "LUCAS" else None,
@@ -602,7 +613,7 @@ def previa(dev_id):
         erro = None
     except Exception as e:
         corpo, modelo, erro = None, None, str(e)
-    return render_page(
+    return _render[0](
         "Prévia da devolução", "devolucoes", TEMPLATE_PREVIA,
         corpo=json.dumps(corpo, ensure_ascii=False, indent=2) if corpo else "",
         modelo=modelo, erro=erro, ic=ICONES,
@@ -842,8 +853,12 @@ TEMPLATE_PREVIA = """
 """
 
 
-def init_app(app, get_shopee_client):
+def init_app(app, get_shopee_client, render=None, home=None):
     _get_shopee[0] = get_shopee_client
+    if render:
+        _render[0] = render
+    if home:
+        _home[0] = home
     bling_client.init_db()
     init_db()
     historico.init_app(get_shopee_client, sincronizar_desde)
