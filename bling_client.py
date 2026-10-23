@@ -162,6 +162,12 @@ def buscar_pedido_por_numero_loja(order_sn):
     return lista
 
 
+def buscar_nfe_saida_por_numero_loja(order_sn):
+    """Atalho: lista NF-e de saída pelo número do pedido na loja (1 chamada em vez de 2)."""
+    dados = _get("nfe", params={"numeroLoja": order_sn, "tipo": "1"})
+    return dados.get("data") or []
+
+
 def detalhe_pedido(pedido_id):
     return _get(f"pedidos/vendas/{pedido_id}").get("data") or {}
 
