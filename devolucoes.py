@@ -12,6 +12,7 @@ Acesso: só os logins JULIANA e LUCAS. A autorização do Bling (Conectar Bling)
 
 import json
 import secrets
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -87,6 +88,19 @@ def init_db():
                 dados_json TEXT
             )
             """
+        )
+        # Cache da lista de devoluções da Shopee: rastreio de retorno -> pedido.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS shopee_devolucoes (
+                rastreio TEXT PRIMARY KEY,
+                order_sn TEXT NOT NULL,
+                return_sn TEXT
+            )
+            """
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS devolucoes_meta (chave TEXT PRIMARY KEY, valor TEXT)"
         )
 
 
@@ -174,38 +188,129 @@ def _normalizar(rastreio):
     return r
 
 
-def _buscar_nas_devolucoes_shopee(rastreio):
-    """Rastreio de retorno: procura na lista de devoluções da Shopee (janelas de 15 dias)."""
+CHAVES_RASTREIO = ("tracking_number", "reverse_tracking_number", "return_tracking_number")
+SYNC_MIN_INTERVALO = 45        # segundos entre duas atualizações da lista da Shopee
+SYNC_FUNDO_INTERVALO = 600     # ao abrir a tela, atualiza em segundo plano se passou disso
+_sync_lock = threading.Lock()
+
+
+def _meta_ler(chave):
+    with models.get_conn() as conn:
+        row = conn.execute("SELECT valor FROM devolucoes_meta WHERE chave = ?", (chave,)).fetchone()
+        return row["valor"] if row else None
+
+
+def _meta_gravar(chave, valor):
+    with models.get_conn() as conn:
+        conn.execute(
+            "INSERT INTO devolucoes_meta (chave, valor) VALUES (?, ?) "
+            "ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor",
+            (chave, str(valor)),
+        )
+
+
+def _cache_buscar(rastreio):
+    with models.get_conn() as conn:
+        row = conn.execute(
+            "SELECT order_sn FROM shopee_devolucoes WHERE rastreio = ?", (rastreio,)
+        ).fetchone()
+        return row["order_sn"] if row else None
+
+
+def _baixar_janela(client, ini, fim, campo):
+    """Baixa todas as devoluções da Shopee de uma janela (até 15 dias) e guarda no cache."""
+    salvos = 0
+    for pagina in range(50):
+        resp = client._shop_request(
+            "GET", "/api/v2/returns/get_return_list",
+            params={"page_no": pagina, "page_size": 100,
+                    f"{campo}_from": ini, f"{campo}_to": fim},
+        )
+        if resp.get("error"):
+            raise RuntimeError(resp.get("message") or resp.get("error"))
+        corpo = resp.get("response") or {}
+        lista = corpo.get("return") or corpo.get("return_list") or []
+        linhas = []
+        for dev in lista:
+            sn = dev.get("order_sn")
+            if not sn:
+                continue
+            for k in CHAVES_RASTREIO:
+                r = _normalizar(str(dev.get(k) or ""))
+                if r:
+                    linhas.append((r, sn, str(dev.get("return_sn") or "")))
+        if linhas:
+            with models.get_conn() as conn:
+                conn.executemany(
+                    "INSERT INTO shopee_devolucoes (rastreio, order_sn, return_sn) VALUES (?,?,?) "
+                    "ON CONFLICT(rastreio) DO UPDATE SET order_sn = excluded.order_sn, "
+                    "return_sn = excluded.return_sn",
+                    linhas,
+                )
+            salvos += len(linhas)
+        if not corpo.get("more"):
+            break
+    return salvos
+
+
+def sincronizar_devolucoes_shopee(forcar=False):
+    """Atualiza o cache local de devoluções da Shopee (rastreio de retorno -> pedido).
+
+    Primeira vez: baixa os últimos 60 dias. Depois: só o que mudou desde a última
+    atualização (normalmente uma página). Nunca roda duas ao mesmo tempo, e não roda
+    de novo antes de SYNC_MIN_INTERVALO segundos, a não ser que forcar=True."""
     client = _get_shopee[0]() if _get_shopee[0] else None
     if client is None:
-        return None
-    agora = int(time.time())
-    fim = agora
-    limite = agora - DIAS_DEVOLUCOES_SHOPEE * 86400
-    while fim > limite:
-        ini = max(fim - 15 * 86400, limite)
-        for pagina in range(20):
+        return False
+    if not _sync_lock.acquire(blocking=False):
+        # Outra atualização já está rodando: espera ela terminar (até 90 s) e usa o resultado.
+        if _sync_lock.acquire(timeout=90):
+            _sync_lock.release()
+        return True
+    try:
+        agora = int(time.time())
+        ultima_em = int(float(_meta_ler("shopee_ret_sync_em") or 0))
+        if not forcar and agora - ultima_em < SYNC_MIN_INTERVALO:
+            return True
+        ate = int(float(_meta_ler("shopee_ret_sync_ate") or 0))
+        limite = agora - DIAS_DEVOLUCOES_SHOPEE * 86400
+        # Margem de 1 hora para trás, para não perder devolução atualizada na virada.
+        desde = max(ate - 3600, limite) if ate else limite
+        fim = agora
+        while fim > desde:
+            ini = max(fim - 15 * 86400 + 60, desde)
             try:
-                resp = client._shop_request(
-                    "GET", "/api/v2/returns/get_return_list",
-                    params={"page_no": pagina, "page_size": 100,
-                            "create_time_from": ini, "create_time_to": fim},
-                )
+                # update_time pega também devoluções antigas que só agora ganharam rastreio.
+                _baixar_janela(client, ini, fim, "update_time")
             except Exception:
-                return None
-            corpo = resp.get("response") or {}
-            lista = corpo.get("return") or corpo.get("return_list") or []
-            for dev in lista:
-                rastreios = {
-                    _normalizar(str(dev.get(k) or ""))
-                    for k in ("tracking_number", "reverse_tracking_number", "return_tracking_number")
-                }
-                if rastreio in rastreios and dev.get("order_sn"):
-                    return dev["order_sn"]
-            if not corpo.get("more"):
-                break
-        fim = ini
-    return None
+                _baixar_janela(client, ini, fim, "create_time")
+            fim = ini
+        _meta_gravar("shopee_ret_sync_ate", agora)
+        _meta_gravar("shopee_ret_sync_em", agora)
+        return True
+    except Exception:
+        return False
+    finally:
+        _sync_lock.release()
+
+
+def _sincronizar_em_fundo_se_preciso():
+    try:
+        ultima_em = int(float(_meta_ler("shopee_ret_sync_em") or 0))
+    except Exception:
+        ultima_em = 0
+    if time.time() - ultima_em > SYNC_FUNDO_INTERVALO and not _sync_lock.locked():
+        threading.Thread(target=sincronizar_devolucoes_shopee, daemon=True).start()
+
+
+def _buscar_nas_devolucoes_shopee(rastreio):
+    """Rastreio de retorno: primeiro no cache local; se não estiver, atualiza o cache
+    só com o que é novo na Shopee e procura de novo."""
+    sn = _cache_buscar(rastreio)
+    if sn:
+        return sn
+    sincronizar_devolucoes_shopee()
+    return _cache_buscar(rastreio)
 
 
 def consultar(rastreio):
@@ -226,6 +331,19 @@ def consultar(rastreio):
         return reg, itens
 
     try:
+        # Atalho: nota de saída direto pelo número do pedido Shopee.
+        nfes = []
+        try:
+            nfes = bling_client.buscar_nfe_saida_por_numero_loja(reg["order_sn"])
+        except Exception:
+            nfes = []
+        # Se vier muita nota, o filtro não foi aplicado: ignora o atalho.
+        if 0 < len(nfes) <= 3:
+            validas = [n for n in nfes if n.get("situacao") in bling_client.NFE_AUTORIZADAS] or nfes
+            nfe = bling_client.detalhe_nfe(validas[0]["id"])
+            # Só aceita se a nota for mesmo deste pedido Shopee.
+            if str(nfe.get("numeroPedidoLoja") or "").strip() == reg["order_sn"]:
+                return _montar(reg, itens, nfe)
         pedidos = bling_client.buscar_pedido_por_numero_loja(reg["order_sn"])
         if not pedidos:
             reg["status"] = ST_SEM_NOTA
@@ -249,6 +367,10 @@ def consultar(rastreio):
         reg["motivo"] = f"Falha de conexão com o Bling: {e}"
         return reg, itens
 
+    return _montar(reg, itens, nfe)
+
+
+def _montar(reg, itens, nfe):
     contato = nfe.get("contato") or {}
     reg.update(
         bling_nfe_id=nfe.get("id"),
@@ -296,6 +418,7 @@ def _somente_liberados():
 
 @bp.route("/devolucoes")
 def painel():
+    _sincronizar_em_fundo_se_preciso()
     devs = _listar()
     resumo = {
         "total": len(devs),
