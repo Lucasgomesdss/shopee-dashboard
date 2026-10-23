@@ -21,6 +21,7 @@ from flask import Blueprint, flash, jsonify, redirect, request, session, url_for
 
 import bling_client
 import devolucoes_gerar as gerar
+import historico
 import models
 from layout_v2 import ICONES, render_page
 
@@ -311,6 +312,23 @@ def sincronizar_devolucoes_shopee(forcar=False):
         _sync_lock.release()
 
 
+def sincronizar_desde(ts_inicio):
+    """Baixa a lista de devoluções da Shopee de ts_inicio até agora (usado pela importação
+    do histórico, em segundo plano). Espera a vez se outra atualização estiver rodando."""
+    client = _get_shopee[0]() if _get_shopee[0] else None
+    if client is None:
+        return
+    with _sync_lock:
+        fim = int(time.time())
+        while fim > ts_inicio:
+            ini = max(fim - 15 * 86400 + 60, ts_inicio)
+            try:
+                _baixar_janela(client, ini, fim, "create_time")
+            except Exception:
+                pass
+            fim = ini
+
+
 def _sincronizar_em_fundo_se_preciso():
     """Só a PRIMEIRA carga (60 dias) roda em segundo plano ao abrir a tela. Depois disso
     a lista é atualizada apenas quando uma bipagem não acha o rastreio no cache."""
@@ -338,15 +356,18 @@ def consultar(rastreio):
     itens = []
 
     local = models.find_by_tracking(rastreio)
+    antigo = None if local else historico.buscar(rastreio)
     if local:
         reg["order_sn"], reg["origem"] = local["order_sn"], "banco"
+    elif antigo:
+        reg["order_sn"], reg["origem"] = antigo, "histórico"
     else:
         sn = _buscar_nas_devolucoes_shopee(rastreio)
         if sn:
             reg["order_sn"], reg["origem"] = sn, "devoluções Shopee"
     if not reg.get("order_sn"):
         reg["status"] = ST_NAO_ACHOU
-        reg["motivo"] = "Não está no banco do dashboard nem na lista de devoluções da Shopee."
+        reg["motivo"] = "Não está no banco do dashboard, no histórico desde junho nem na lista de devoluções da Shopee."
         return reg, itens
 
     try:
@@ -457,6 +478,7 @@ def painel():
     return render_page(
         "Devoluções", "devolucoes", TEMPLATE,
         devs=devs, resumo=resumo, ic=ICONES, modelo=modelo,
+        hist=historico.situacao() if session.get("employee_name") == "LUCAS" else None,
         bling_configurado=bling_client.configurado(),
         bling_conectado=bling_client.conectado(),
         eh_lucas=session.get("employee_name") == "LUCAS",
@@ -587,6 +609,18 @@ def previa(dev_id):
     )
 
 
+@bp.route("/devolucoes/historico/importar", methods=["POST"])
+def importar_historico():
+    """Importa (em segundo plano) os rastreios dos pedidos de junho para cá. Só LUCAS."""
+    if session.get("employee_name") != "LUCAS":
+        return redirect(url_for("devolucoes.painel"))
+    if historico.iniciar():
+        flash("Importação do histórico iniciada. Pode continuar usando o dashboard normalmente.")
+    else:
+        flash("A importação do histórico já está rodando.")
+    return redirect(url_for("devolucoes.painel"))
+
+
 @bp.route("/devolucoes/modelo/atualizar", methods=["POST"])
 def atualizar_modelo():
     try:
@@ -697,6 +731,10 @@ TEMPLATE = """
   </div>
   {% endif %}
   {% if bling_conectado and eh_lucas %}<div class="dv-sub" style="margin:-6px 0 12px">Bling conectado. <a href="{{ url_for('devolucoes.bling_autorizar') }}">Reconectar</a> (use depois de mudar permissões do app no Bling).</div>{% endif %}
+  {% if hist %}<div class="dv-sub" style="margin:-6px 0 12px">Histórico desde {{ hist.inicio }}: <b>{{ hist.total }}</b> rastreios salvos{% if hist.ate %}, até {{ hist.ate }}{% endif %}.
+    {% if hist.rodando %}<b>Importando…</b> (atualize a página para ver o andamento)
+    {% else %}<form method="post" action="{{ url_for('devolucoes.importar_historico') }}" style="display:inline"><button class="v2-btn sec" type="submit" style="padding:2px 8px">{% if hist.concluido %}atualizar histórico{% elif hist.ate %}continuar importação{% else %}importar pedidos desde junho{% endif %}</button></form>{% endif %}
+    {% if hist.erro %}<span style="color:#9b1c1c"> {{ hist.erro }}</span>{% endif %}</div>{% endif %}
 
   {% if resumo.fila %}
   <div class="dv-aviso"><b>Gerando notas…</b> faltam {{ resumo.fila }}. A página atualiza quando terminar (pode continuar usando o dashboard).</div>
@@ -808,6 +846,7 @@ def init_app(app, get_shopee_client):
     _get_shopee[0] = get_shopee_client
     bling_client.init_db()
     init_db()
+    historico.init_app(get_shopee_client, sincronizar_desde)
     app.register_blueprint(bp)
     try:
         gerar.retomar_se_preciso()
