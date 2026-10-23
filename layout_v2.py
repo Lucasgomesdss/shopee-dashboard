@@ -14,6 +14,7 @@ _I = {
     "concluidos": '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 12l3 3 5-6"/>',
     "desempenho": '<path d="M5 20V10M12 20V4M19 20v-7"/>',
     "etiquetas": '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.5"/>',
+    "devolucoes": '<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
     "sair": '<path d="M9 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h4M16 8l4 4-4 4M20 12H9"/>',
     "menu": '<path d="M4 7h16M4 12h16M4 17h16"/>',
     "recolher": '<path d="M15 6l-6 6 6 6"/>',
@@ -78,6 +79,9 @@ BASE_TOP = (
     <a href="{{ url_for('lotes.painel') }}"{% if v2_active == 'etiquetas' %} class="on"{% endif %}>"""
     + ICONES["etiquetas"]
     + """<span class="v2-txt">Etiquetas</span></a>
+    {% if employee_name in ('JULIANA', 'LUCAS') %}<a href="{{ url_for('devolucoes.painel') }}"{% if v2_active == 'devolucoes' %} class="on"{% endif %}>"""
+    + ICONES["devolucoes"]
+    + """<span class="v2-txt">Devoluções</span></a>{% endif %}
   </nav>
   <div class="v2-foot">
     {% if employee_name %}<div class="v2-user"><span class="v2-av">{{ employee_name[:1] }}</span><span class="v2-txt">{{ employee_name }}</span></div>{% endif %}
