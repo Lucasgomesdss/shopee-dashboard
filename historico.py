@@ -92,9 +92,9 @@ def _normalizar(r):
     return r
 
 
-def _listar_pedidos(client, ini, fim, status, cursor):
+def _listar_pedidos(client, ini, fim, status, cursor, campo="create_time"):
     params = {
-        "time_range_field": "create_time",
+        "time_range_field": campo,
         "time_from": ini,
         "time_to": fim,
         "page_size": 100,
@@ -128,17 +128,17 @@ def _salvar_detalhes(client, sns):
         time.sleep(PAUSA)
 
 
-def _janela(client, ini, fim):
+def _janela(client, ini, fim, campo="create_time"):
     """Importa uma janela de até 15 dias. Tenta sem filtro de status; se a Shopee exigir,
     passa por cada status."""
     statuses = [None]
-    primeira = _listar_pedidos(client, ini, fim, None, "")
+    primeira = _listar_pedidos(client, ini, fim, None, "", campo)
     if primeira.get("error"):
         statuses = STATUS_ALTERNATIVOS
     for st in statuses:
         cursor = ""
         for _ in range(200):  # trava: até 20 mil pedidos por janela e status
-            resp = primeira if (st is None and cursor == "") else _listar_pedidos(client, ini, fim, st, cursor)
+            resp = primeira if (st is None and cursor == "") else _listar_pedidos(client, ini, fim, st, cursor, campo)
             if resp.get("error"):
                 if st is None:
                     raise RuntimeError(resp.get("message") or resp.get("error"))
@@ -163,10 +163,16 @@ def _rodar():
         _meta("hist_erro", "")
         agora = int(time.time())
         ini = int(float(_meta("hist_ate") or INICIO_PADRAO.timestamp()))
+        # Carga inicial: por data de criação. Depois de concluída: pelos pedidos que MUDARAM
+        # desde a última vez (pega também os antigos que só agora ganharam etiqueta/rastreio).
+        campo = "create_time"
+        if _meta("hist_concluido") == "1":
+            campo = "update_time"
+            ini = max(int(INICIO_PADRAO.timestamp()), ini - 3600)
         try:
             while ini < agora:
                 fim = min(ini + JANELA, agora)
-                _janela(client, ini, fim)
+                _janela(client, ini, fim, campo)
                 ini = fim
                 _meta("hist_ate", ini)   # progresso salvo: reinício continua daqui
             # Também a lista de devoluções da Shopee desde junho (rastreios de retorno).
@@ -182,6 +188,22 @@ def iniciar():
     if _lock.locked():
         return False
     threading.Thread(target=_rodar, daemon=True).start()
+    return True
+
+
+_ultima_incremental = [0.0]
+
+
+def rodar_incremental():
+    """Na hora da bipagem: se o histórico já foi importado, busca só os pedidos novos desde
+    a última vez (normalmente uma ou duas páginas). No máximo uma vez a cada 60 s.
+    Devolve True se rodou."""
+    if _meta("hist_concluido") != "1" or _lock.locked():
+        return False
+    if time.time() - _ultima_incremental[0] < 60:
+        return False
+    _ultima_incremental[0] = time.time()
+    _rodar()
     return True
 
 
