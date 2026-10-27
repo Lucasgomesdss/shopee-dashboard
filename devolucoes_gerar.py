@@ -377,10 +377,19 @@ def _rodar_fila():
                 ).fetchone()
             if not row:
                 return
+            # Reserva a linha de forma atômica: se outro processo do servidor (na troca
+            # automática do gunicorn) já pegou esta devolução, pula — nunca gera duas notas.
+            with models.get_conn() as conn:
+                pegou = conn.execute(
+                    "UPDATE devolucoes SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+                    (ST_GERANDO, datetime.utcnow().isoformat(), row["id"], ST_NA_FILA),
+                ).rowcount
+            if not pegou:
+                time.sleep(0.5)
+                continue
             try:
                 if row["nfe_devolucao_id"]:
                     # Já criada antes: só reenviar à Sefaz.
-                    _atualizar(row["id"], status=ST_GERANDO)
                     emitir(row["id"])
                 else:
                     gerar_uma(row["id"])
@@ -401,12 +410,18 @@ def iniciar_fila():
         threading.Thread(target=_rodar_fila, daemon=True).start()
 
 
+PARADA_MINUTOS = 10   # "gerando" sem nenhuma atualização há mais que isso = processo morreu
+
+
 def retomar_se_preciso():
-    """Se o servidor reiniciou no meio de um lote, continua de onde parou."""
+    """Se o servidor reiniciou no meio de um lote, continua de onde parou.
+    Só devolve à fila o que está "gerando" PARADO há mais de PARADA_MINUTOS: o que outro
+    processo ainda está gerando não é tocado (evita nota duplicada)."""
+    limite = (datetime.utcnow() - timedelta(minutes=PARADA_MINUTOS)).isoformat()
     with models.get_conn() as conn:
         conn.execute(
-            "UPDATE devolucoes SET status = ? WHERE status = ?",
-            (ST_NA_FILA, ST_GERANDO),
+            "UPDATE devolucoes SET status = ? WHERE status = ? AND (updated_at IS NULL OR updated_at < ?)",
+            (ST_NA_FILA, ST_GERANDO, limite),
         )
         tem = conn.execute(
             "SELECT 1 FROM devolucoes WHERE status = ? AND removido = 0 LIMIT 1", (ST_NA_FILA,)
