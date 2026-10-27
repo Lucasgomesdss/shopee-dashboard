@@ -523,6 +523,10 @@ import devolucoes
 
 devolucoes.init_app(app, get_shopee_client)
 
+import contestacoes
+
+contestacoes.init_app(app, get_shopee_client, devolucoes.return_sns_de)
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)

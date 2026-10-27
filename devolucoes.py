@@ -21,6 +21,7 @@ from flask import Blueprint, flash, jsonify, redirect, request, session, url_for
 
 import bling_client
 import devolucoes_gerar as gerar
+import historico
 import models
 from layout_v2 import ICONES, render_page
 
@@ -124,12 +125,35 @@ def _agora():
     return datetime.utcnow().isoformat()
 
 
+def _autorizadas(dias=7):
+    """Notas já autorizadas na Sefaz: saem da lista principal e ficam num resumo compacto."""
+    desde = (datetime.utcnow() - timedelta(days=dias)).isoformat()
+    with models.get_conn() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT id, rastreio, order_sn, cliente_nome, nfe_devolucao_numero, total, "
+            "COALESCE(updated_at, created_at) AS quando_utc FROM devolucoes "
+            "WHERE removido = 0 AND status = 'emitida' AND COALESCE(updated_at, created_at) >= ? "
+            "ORDER BY id DESC LIMIT 300",
+            (desde,),
+        ).fetchall()]
+    hoje = datetime.now(BRT).date()
+    n_hoje = 0
+    for d in rows:
+        try:
+            t = datetime.fromisoformat(d["quando_utc"]).replace(tzinfo=timezone.utc).astimezone(BRT)
+            d["quando"] = t.strftime("%d/%m %H:%M")
+            if t.date() == hoje:
+                n_hoje += 1
+        except (TypeError, ValueError):
+            d["quando"] = ""
+    return rows, n_hoje
+
+
 def _listar():
     with models.get_conn() as conn:
         devs = [dict(r) for r in conn.execute(
-            "SELECT * FROM devolucoes WHERE removido = 0 AND (status NOT IN ('emitida') "
-            "OR created_at >= ?) ORDER BY id DESC LIMIT 80",
-            ((datetime.utcnow() - timedelta(hours=24)).isoformat(),),
+            "SELECT * FROM devolucoes WHERE removido = 0 AND status <> 'emitida' "
+            "ORDER BY id DESC LIMIT 80"
         ).fetchall()]
         if devs:
             ids = [d["id"] for d in devs]
@@ -311,6 +335,66 @@ def sincronizar_devolucoes_shopee(forcar=False):
         _sync_lock.release()
 
 
+def sincronizar_desde(ts_inicio):
+    """Baixa a lista de devoluções da Shopee de ts_inicio até agora (usado pela importação
+    do histórico, em segundo plano). Espera a vez se outra atualização estiver rodando."""
+    client = _get_shopee[0]() if _get_shopee[0] else None
+    if client is None:
+        return False
+    falhas = 0
+    with _sync_lock:
+        fim = int(time.time())
+        while fim > ts_inicio:
+            ini = max(fim - 15 * 86400 + 60, ts_inicio)
+            try:
+                _baixar_janela(client, ini, fim, "create_time")
+            except Exception:
+                falhas += 1
+            fim = ini
+            time.sleep(1)  # folga entre janelas: roda em segundo plano, sem pressa
+    return falhas == 0
+
+
+def _reconsultar_nao_achados():
+    """Depois de ampliar a lista de devoluções, tenta de novo os pacotes 'não encontrados'
+    dos últimos 30 dias que agora aparecem na lista (só esses; os outros nem consulta)."""
+    desde = (datetime.utcnow() - timedelta(days=30)).isoformat()
+    with models.get_conn() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM devolucoes WHERE removido = 0 AND status = ? "
+            "AND nfe_devolucao_id IS NULL AND created_at >= ?",
+            (ST_NAO_ACHOU, desde),
+        ).fetchall()]
+    for row in rows:
+        rastreio = _normalizar(row["rastreio"])
+        if not (_cache_buscar(rastreio) or historico.buscar(rastreio)):
+            continue
+        try:
+            reg, itens = consultar(rastreio)
+        except Exception:
+            continue
+        reg["bipado_por"] = row["bipado_por"]
+        with models.get_conn() as conn:
+            conn.execute("UPDATE devolucoes SET removido = 1 WHERE id = ?", (row["id"],))
+        _gravar(reg, itens)
+        time.sleep(0.5)
+
+
+def _ampliar_devolucoes_shopee():
+    """Uma vez só: a lista de devoluções da Shopee cobria 60 dias, e pacotes de devoluções
+    abertas em junho/julho não eram encontrados. Baixa desde o início do histórico,
+    em segundo plano, e depois reconsulta os 'não encontrados' recentes."""
+    try:
+        if _meta_ler("ret_backfill_ok") == "1":
+            return
+        if sincronizar_desde(historico._inicio()):
+            _meta_gravar("ret_backfill_ok", "1")
+            _meta_gravar("hist_devolucoes_ok", "1")  # a importação do histórico não repete
+        _reconsultar_nao_achados()
+    except Exception:
+        pass
+
+
 def _sincronizar_em_fundo_se_preciso():
     """Só a PRIMEIRA carga (60 dias) roda em segundo plano ao abrir a tela. Depois disso
     a lista é atualizada apenas quando uma bipagem não acha o rastreio no cache."""
@@ -332,21 +416,63 @@ def _buscar_nas_devolucoes_shopee(rastreio):
     return _cache_buscar(rastreio)
 
 
+def return_sns_de(texto):
+    """Para a tela Contestações: rastreio da devolução, rastreio de ida ou número do
+    pedido -> lista de return_sn da Shopee (um pedido pode ter mais de uma devolução)."""
+    codigo = _normalizar(texto)
+
+    def _por_pedido(sn):
+        with models.get_conn() as conn:
+            return [r["return_sn"] for r in conn.execute(
+                "SELECT DISTINCT return_sn FROM shopee_devolucoes WHERE order_sn = ? AND return_sn <> ''",
+                (sn,),
+            ).fetchall()]
+
+    def _tentar():
+        sn = _cache_buscar(codigo)
+        if sn:
+            return _por_pedido(sn)
+        if _por_pedido(codigo):
+            return _por_pedido(codigo)
+        local = models.find_by_tracking(codigo)
+        sn = (local or {}).get("order_sn") if local else None
+        sn = sn or historico.buscar(codigo)
+        return _por_pedido(sn) if sn else []
+
+    achados = _tentar()
+    if not achados:
+        sincronizar_devolucoes_shopee()
+        achados = _tentar()
+    return achados
+
+
 def consultar(rastreio):
     """Resolve rastreio -> pedido Shopee -> pedido Bling -> nota de saída. Só leitura."""
     reg = {"rastreio": rastreio}
     itens = []
 
     local = models.find_by_tracking(rastreio)
+    antigo = None if local else historico.buscar(rastreio)
     if local:
         reg["order_sn"], reg["origem"] = local["order_sn"], "banco"
+    elif antigo:
+        reg["order_sn"], reg["origem"] = antigo, "histórico"
     else:
         sn = _buscar_nas_devolucoes_shopee(rastreio)
         if sn:
             reg["order_sn"], reg["origem"] = sn, "devoluções Shopee"
     if not reg.get("order_sn"):
+        # Pedido recente que ainda não entrou no histórico: busca só o que é novo e tenta de novo.
+        try:
+            if historico.rodar_incremental():
+                sn = historico.buscar(rastreio)
+                if sn:
+                    reg["order_sn"], reg["origem"] = sn, "histórico"
+        except Exception:
+            pass
+    if not reg.get("order_sn"):
         reg["status"] = ST_NAO_ACHOU
-        reg["motivo"] = "Não está no banco do dashboard nem na lista de devoluções da Shopee."
+        reg["motivo"] = "Não está no banco do dashboard, no histórico de pedidos antigos nem na lista de devoluções da Shopee."
         return reg, itens
 
     try:
@@ -440,11 +566,20 @@ def painel():
     _sincronizar_em_fundo_se_preciso()
     devs = _listar()
     fila = [d for d in devs if d["status"] in (gerar.ST_NA_FILA, gerar.ST_GERANDO)]
+    if fila and not gerar._job_lock.locked():
+        # Fila parada (servidor reiniciou ou o processo caiu no meio): continua sozinha.
+        # Notas já criadas só são reenviadas, nunca criadas de novo.
+        try:
+            gerar.retomar_se_preciso()
+        except Exception:
+            pass
+    feitas, feitas_hoje = _autorizadas()
     resumo = {
         "total": len(devs),
+        "hoje": feitas_hoje,
         "prontos": sum(1 for d in devs if d["status"] == ST_PRONTO),
         "gerados": sum(1 for d in devs if d["status"] in (gerar.ST_GERADO, gerar.ST_EMITIDA)),
-        "emitidas": sum(1 for d in devs if d["status"] == gerar.ST_EMITIDA),
+        "emitidas": len(feitas),
         "problemas": sum(1 for d in devs if d["status"] in (ST_NAO_ACHOU, ST_SEM_NOTA, ST_ERRO, gerar.ST_FALHOU, gerar.ST_REJEITADA)),
         "fila": len(fila),
     }
@@ -456,7 +591,8 @@ def painel():
         modelo = None
     return render_page(
         "Devoluções", "devolucoes", TEMPLATE,
-        devs=devs, resumo=resumo, ic=ICONES, modelo=modelo,
+        devs=devs, feitas=feitas, resumo=resumo, ic=ICONES, modelo=modelo,
+        hist=historico.situacao() if session.get("employee_name") == "LUCAS" else None,
         bling_configurado=bling_client.configurado(),
         bling_conectado=bling_client.conectado(),
         eh_lucas=session.get("employee_name") == "LUCAS",
@@ -587,6 +723,18 @@ def previa(dev_id):
     )
 
 
+@bp.route("/devolucoes/historico/importar", methods=["POST"])
+def importar_historico():
+    """Importa (em segundo plano) os rastreios dos pedidos de junho para cá. Só LUCAS."""
+    if session.get("employee_name") != "LUCAS":
+        return redirect(url_for("devolucoes.painel"))
+    if historico.iniciar():
+        flash("Importação do histórico iniciada. Pode continuar usando o dashboard normalmente.")
+    else:
+        flash("A importação do histórico já está rodando.")
+    return redirect(url_for("devolucoes.painel"))
+
+
 @bp.route("/devolucoes/modelo/atualizar", methods=["POST"])
 def atualizar_modelo():
     try:
@@ -697,6 +845,10 @@ TEMPLATE = """
   </div>
   {% endif %}
   {% if bling_conectado and eh_lucas %}<div class="dv-sub" style="margin:-6px 0 12px">Bling conectado. <a href="{{ url_for('devolucoes.bling_autorizar') }}">Reconectar</a> (use depois de mudar permissões do app no Bling).</div>{% endif %}
+  {% if hist %}<div class="dv-sub" style="margin:-6px 0 12px">Histórico desde {{ hist.inicio }}: <b>{{ hist.total }}</b> rastreios salvos{% if hist.ate %}, até {{ hist.ate }}{% endif %}.
+    {% if hist.rodando %}<b>Importando…</b> (atualize a página para ver o andamento)
+    {% else %}<form method="post" action="{{ url_for('devolucoes.importar_historico') }}" style="display:inline"><button class="v2-btn sec" type="submit" style="padding:2px 8px">{% if hist.concluido %}atualizar histórico{% elif hist.ate %}continuar importação{% else %}importar pedidos desde {{ hist.inicio }}{% endif %}</button></form>{% endif %}
+    {% if hist.erro %}<span style="color:#9b1c1c"> {{ hist.erro }}</span>{% endif %}</div>{% endif %}
 
   {% if resumo.fila %}
   <div class="dv-aviso"><b>Gerando notas…</b> faltam {{ resumo.fila }}. A página atualiza quando terminar (pode continuar usando o dashboard).</div>
@@ -710,9 +862,9 @@ TEMPLATE = """
   </div>
 
   <div class="v2-cards dv-cards4">
-    <div class="v2-card"><div><div class="l">Na lista</div><div class="n">{{ resumo.total }}</div></div></div>
+    <div class="v2-card"><div><div class="l">Pendentes</div><div class="n">{{ resumo.total }}</div></div></div>
     <div class="v2-card" style="border-color:#2a78d6"><div><div class="l">Prontos para gerar</div><div class="n">{{ resumo.prontos }}</div></div></div>
-    <div class="v2-card" style="border-color:#1baf7a"><div><div class="l">Autorizadas na Sefaz</div><div class="n">{{ resumo.emitidas }}</div></div></div>
+    <div class="v2-card" style="border-color:#1baf7a"><div><div class="l">Autorizadas hoje</div><div class="n">{{ resumo.hoje }}</div></div></div>
     <div class="v2-card" style="border-color:#eb6834"><div><div class="l">Com problema</div><div class="n">{{ resumo.problemas }}</div></div></div>
   </div>
 
@@ -727,7 +879,7 @@ TEMPLATE = """
     </div>
     {% if modelo %}<div class="dv-sub" style="margin-bottom:6px">Modelo usado: nota de devolução {{ modelo.numero }} ({{ modelo.cliente }}).
       <form method="post" action="{{ url_for('devolucoes.atualizar_modelo') }}" style="display:inline"><button class="v2-btn sec" type="submit" style="padding:2px 8px">atualizar modelo</button></form></div>{% endif %}
-    {% if not devs %}<p class="v2-sub">Nenhum pacote bipado ainda.</p>{% endif %}
+    {% if not devs %}<p class="v2-sub">Nada pendente. As notas autorizadas estão logo abaixo.</p>{% endif %}
     {% for d in devs %}
     {% set pode = d.status in ('pronto', 'falhou') and not d.nfe_devolucao_id %}
     <div class="dv-row">
@@ -768,6 +920,22 @@ TEMPLATE = """
     </div>
     {% endfor %}
   </div>
+
+  {% if feitas %}
+  <details class="v2-panel">
+    <summary style="cursor:pointer"><b>Autorizadas na Sefaz</b> <span class="dv-sub">— {{ feitas|length }} nos últimos 7 dias (clique para ver)</span></summary>
+    <table style="width:100%;border-collapse:collapse;margin-top:10px;font-size:14px">
+      <tr class="dv-sub" style="text-align:left"><th>Quando</th><th>Nota</th><th>Cliente</th><th>Pedido</th><th>Rastreio</th><th style="text-align:right">Valor</th></tr>
+      {% for f in feitas %}
+      <tr style="border-top:1px solid #eef0f4">
+        <td>{{ f.quando }}</td><td><b>{{ f.nfe_devolucao_numero }}</b></td><td>{{ f.cliente_nome or '' }}</td>
+        <td class="dv-mono">{{ f.order_sn or '' }}</td><td class="dv-mono">{{ f.rastreio }}</td>
+        <td style="text-align:right">{% if f.total %}R$ {{ '%.2f'|format(f.total)|replace('.', ',') }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </details>
+  {% endif %}
 </div>
 <script>
 (function(){
@@ -808,7 +976,12 @@ def init_app(app, get_shopee_client):
     _get_shopee[0] = get_shopee_client
     bling_client.init_db()
     init_db()
+    historico.init_app(get_shopee_client, sincronizar_desde)
     app.register_blueprint(bp)
+    # 90 s depois de subir (servidor já atendendo), amplia a lista de devoluções desde junho.
+    t = threading.Timer(90, _ampliar_devolucoes_shopee)
+    t.daemon = True
+    t.start()
     try:
         gerar.retomar_se_preciso()
     except Exception:
