@@ -313,6 +313,14 @@ def emitir(dev_id):
     if not dev or not dev["nfe_devolucao_id"] or dev["status"] == ST_EMITIDA:
         return
     nfe_id = dev["nfe_devolucao_id"]
+    # Se já foi autorizada (ex.: o servidor caiu logo depois de enviar), só registra.
+    try:
+        atual = int(bling_client.detalhe_nfe(nfe_id).get("situacao") or 0)
+    except Exception:
+        atual = 0
+    if atual in SITUACOES_AUTORIZADA:
+        _atualizar(dev_id, status=ST_EMITIDA, motivo=None, nfe_devolucao_situacao=atual)
+        return
     try:
         bling_client.enviar_nfe(nfe_id)
     except Exception as e:
