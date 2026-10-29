@@ -83,6 +83,24 @@ def classificar(itens):
     return None
 
 
+CAMPOS_DETALHE = "item_list,shipping_carrier,package_list,fulfillment_flag,invoice_data"
+
+
+def detalhes(client, sns):
+    """Detalhe dos pedidos incluindo a nota fiscal (invoice_data) — até 50 por chamada."""
+    res = client._shop_request("GET", "/api/v2/order/get_order_detail",
+                               params={"order_sn_list": ",".join(sns), "response_optional_fields": CAMPOS_DETALHE})
+    if res.get("error"):
+        raise RuntimeError("Shopee: %s %s" % (res.get("error"), res.get("message")))
+    return (res.get("response") or {}).get("order_list", [])
+
+
+def tem_nota(od):
+    """A Shopee só deixa organizar o envio depois que a nota fiscal chegou nela."""
+    inv = od.get("invoice_data") or {}
+    return bool(inv.get("number") or inv.get("access_key"))
+
+
 def _listar(client, status, de, ate, campo):
     sns = []
     cursor = ""
@@ -109,15 +127,16 @@ def calcular(client):
     membros = {}   # rótulo -> [(chave de ordenação, order_sn)]
     fbs = 0
     abertos = 0
+    sem_nf = 0
     for i in range(0, len(prontos), 50):
-        res = client.get_order_detail(prontos[i:i + 50])
-        if res.get("error"):
-            raise RuntimeError("Shopee: %s %s" % (res.get("error"), res.get("message")))
-        for od in (res.get("response") or {}).get("order_list", []):
+        for od in detalhes(client, prontos[i:i + 50]):
             if od.get("fulfillment_flag") == "fulfilled_by_shopee":
                 fbs += 1
                 continue
             abertos += 1
+            if not tem_nota(od):
+                sem_nf += 1      # fica fora dos lotes até faturar
+                continue
             itens = od.get("item_list") or []
             rotulo = classificar(itens)
             chave = " | ".join(
@@ -175,6 +194,7 @@ def calcular(client):
         "processados": processados,
         "total": abertos + processados,
         "fbs": fbs,
+        "sem_nf": sem_nf,
         "soma_lotes": sum(x["count"] for x in lotes),
         "resto_top": resto.most_common(20),
         "minimo": MIN_ETIQUETAS,
@@ -286,16 +306,16 @@ TEMPLATE = """
   <div class="v2-card g"><span class="ci">{{ ic.concluidos|safe }}</span><div><div class="l">Já processados</div><div class="n">{{ s.processados }}</div></div></div>
 </div>
 <div class="v2-sec">
-  <h2>Lotes disponíveis</h2>
+  <h2>Lotes disponíveis <small style="font-weight:400;font-size:13px;color:#5b6474">· um lote por vez</small></h2>
   <div class="r"><span>{{ s.lotes|length }} lote{{ '' if s.lotes|length == 1 else 's' }}</span>
-    <button type="button" class="v2-btn sec" id="lt-all">Selecionar todos</button>
     <button type="button" class="v2-btn sec" id="lt-none">Limpar</button>
   </div>
 </div>
+{% if s.sem_nf %}<div class="v2-flash" style="margin-bottom:10px">{{ s.sem_nf }} pedido(s) ainda <b>sem nota fiscal na Shopee</b> — ficam fora dos lotes e entram sozinhos quando faturar.</div>{% endif %}
 <div class="v2-list">
   {% for l in s.lotes %}
   <label class="v2-lote">
-    <input type="checkbox" class="lt-chk" name="lote" value="{{ l.label }}" form="lt-form" data-n="{{ l.count }}" data-nome="{{ l.label }}">
+    <input type="radio" class="lt-chk" name="lote" value="{{ l.label }}" form="lt-form" data-n="{{ l.count }}" data-nome="{{ l.label }}">
     <span class="v2-lt"><b>{{ l.label }}</b>{% if l.nota %}<small>{{ l.nota }}</small>{% endif %}</span>
     <span class="v2-cnt">{{ l.count }}</span>
   </label>
@@ -318,12 +338,11 @@ TEMPLATE = """
       x.parentNode.classList.toggle("sel",x.checked);
       if(x.checked){c++;e+=parseInt(x.dataset.n,10);}
     });
-    sel.textContent=c?(c+(c>1?" arquivos selecionados":" arquivo selecionado")):"Nenhum arquivo selecionado";
+    sel.textContent=c?"1 lote selecionado":"Nenhum lote selecionado";
     tot.textContent=e;
     msg.textContent="";
   }
   chks.forEach(function(x){x.addEventListener("change",upd);});
-  document.getElementById("lt-all").addEventListener("click",function(){chks.forEach(function(x){x.checked=true;});upd();});
   document.getElementById("lt-none").addEventListener("click",function(){chks.forEach(function(x){x.checked=false;});upd();});
   document.getElementById("lt-go").addEventListener("click",function(){
     var c=0,e=0; chks.forEach(function(x){if(x.checked){c++;e+=parseInt(x.dataset.n,10);}});

@@ -142,12 +142,12 @@ def _organizar(client, order_sn):
 
 
 def _status(client, sns):
-    """order_sn -> status atual na Shopee."""
+    """order_sn -> status atual na Shopee ('SEM_NF' se a nota fiscal ainda não chegou)."""
     out = {}
     for i in range(0, len(sns), 50):
-        res = client.get_order_detail(sns[i:i + 50])
-        for od in (res.get("response") or {}).get("order_list", []):
-            out[od["order_sn"]] = od.get("order_status")
+        for od in lotes.detalhes(client, sns[i:i + 50]):
+            st = od.get("order_status")
+            out[od["order_sn"]] = "SEM_NF" if st == "READY_TO_SHIP" and not lotes.tem_nota(od) else st
     return out
 
 
@@ -217,7 +217,10 @@ def _rodar(tid, rotulos, limite):
             total = sum(len(s) for _, s in plano)
             _upd(tid, total=total)
             if not total:
-                raise RuntimeError("Nenhum pedido a enviar nos lotes marcados.")
+                raise RuntimeError(
+                    "o lote %s mudou desde a última atualização da tela (pedidos já organizados, "
+                    "cancelados ou o lote ficou pequeno e foi para DIVERSOS UNITÁRIOS). "
+                    "Clique em Atualizar agora e escolha de novo." % ", ".join(rotulos))
 
             # Confere de novo o status logo antes de organizar (nunca organiza duas vezes).
             status = _status(client, [sn for _, s in plano for sn in s])
@@ -226,6 +229,9 @@ def _rodar(tid, rotulos, limite):
                 for n, sn in enumerate(sns, 1):
                     _upd(tid, etapa=f"Organizando envio — {lote} ({n}/{len(sns)})",
                          organizados=organizados, falhas=falhas)
+                    if status.get(sn) == "SEM_NF":
+                        falhas.append([sn, "aguardando nota fiscal — não organizado"])
+                        continue
                     if status.get(sn) != "READY_TO_SHIP":
                         falhas.append([sn, f"não está mais 'A enviar' ({status.get(sn) or 'sem status'})"])
                         continue
@@ -250,6 +256,11 @@ def _rodar(tid, rotulos, limite):
             _upd(tid, status="concluido", etapa="Pronto", organizados=organizados, falhas=falhas, fim_em=_agora())
         except Exception as e:
             _upd(tid, status="erro", etapa=f"Parou: {e}", organizados=organizados, falhas=falhas, fim_em=_agora())
+    # Atualiza os números da tela depois de organizar (fora da trava).
+    try:
+        lotes.atualizar()
+    except Exception:
+        pass
 
 
 def _refazer_arquivo(tid):
@@ -308,8 +319,8 @@ def organizar():
         flash("Organizar envio é liberado só para JULIANA e LUCAS.")
         return redirect(url_for("lotes.painel"))
     rotulos = [r for r in request.form.getlist("lote") if r]
-    if not rotulos:
-        flash("Marque pelo menos um lote.")
+    if len(rotulos) != 1:
+        flash("Escolha um lote por vez.")
         return redirect(url_for("lotes.painel"))
     try:
         limite = int(request.form.get("limite") or 0) or None
