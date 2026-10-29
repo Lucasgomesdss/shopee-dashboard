@@ -1,6 +1,6 @@
 """Tarefas automáticas em horário fixo (horário de Brasília):
 
-- Dia finalizado: todo dia às 18:00 -- arquiva os pedidos que a transportadora já
+- Dia finalizado: de segunda a sábado às 18:00 -- arquiva os pedidos que a transportadora já
   coletou, igual ao botão 'Dia finalizado'.
 - Etiquetas: de segunda a sábado às 06:50 -- atualiza a lista de lotes da tela
   Etiquetas, igual ao botão 'Atualizar agora'.
@@ -27,7 +27,7 @@ ESPERA_NOVA_TENTATIVA = 15  # minutos
 
 # dias: 0 = segunda ... 6 = domingo
 TAREFAS = {
-    "dia_finalizado": {"nome": "Dia finalizado", "hora": (18, 0), "ate": (23, 59), "dias": {0, 1, 2, 3, 4, 5, 6}},
+    "dia_finalizado": {"nome": "Dia finalizado", "hora": (18, 0), "ate": (23, 59), "dias": {0, 1, 2, 3, 4, 5}},
     "etiquetas": {"nome": "Atualizar etiquetas", "hora": (6, 50), "ate": (12, 0), "dias": {0, 1, 2, 3, 4, 5}},
 }
 
