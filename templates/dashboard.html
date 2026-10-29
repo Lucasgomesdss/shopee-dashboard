@@ -33,7 +33,8 @@
 
   <div class="card">
     <h3>Dia finalizado</h3>
-    <p class="muted">Confere com a Shopee quais pedidos concluídos já foram coletados pela transportadora e atualiza a lista.</p>
+    <p class="muted">Confere com a Shopee quais pedidos concluídos já foram coletados pela transportadora e atualiza a lista. <strong>Roda sozinho de segunda a sábado às 18h</strong> — o botão continua aqui para rodar antes, se precisar.</p>
+    {% if fechamento_auto %}<p class="muted" style="font-size:13px">Último fechamento automático: {{ fechamento_auto.quando }}{% if fechamento_auto.status == 'rodando' %} — rodando agora…{% elif fechamento_auto.status == 'erro' %} — não deu certo ({{ fechamento_auto.resultado }}){% endif %}</p>{% endif %}
     <form method="post" action="{{ url_for('dia_finalizado') }}">
       <button type="submit" class="btn-outline">🌙 Dia finalizado</button>
     </form>
