@@ -10,7 +10,7 @@ Fluxo de um trabalho (roda em segundo plano, um por vez):
   5. Guarda um .txt por lote para baixar (fica no histórico da tela).
 
 ATENÇÃO: o passo 3 muda o status do pedido na Shopee e não tem volta pelo sistema.
-Por isso: só JULIANA/LUCAS, confirmação na tela e campo "quantidade" para testar com poucos.
+Por isso: qualquer login (fica registrado quem iniciou), confirmação na tela e campo "quantidade" para testar com poucos.
 """
 
 import json
@@ -29,7 +29,6 @@ import reimpressao
 bp = Blueprint("lotes_envio", __name__)
 
 BRT = timezone(timedelta(hours=-3))
-LIBERADOS = {"JULIANA", "LUCAS"}
 PAUSA = 0.4                 # entre chamadas de organizar envio
 ESPERA_RASTREIO = 120       # segundos esperando a Shopee gerar o rastreio
 BATIMENTO_MORTO = 180       # trabalho sem sinal de vida há mais que isso = processo caiu
@@ -308,15 +307,15 @@ def resumo_tela():
         except (TypeError, ValueError):
             a["quando"] = ""
     return {"ativo": bool(ativo), "trabalho": t, "arquivos": arquivos,
-            "pode": session.get("employee_name") in LIBERADOS}
+            "pode": bool(session.get("employee_name"))}
 
 
 # ------------------------------------------------------------------ rotas
 
 @bp.route("/lotes/organizar", methods=["POST"])
 def organizar():
-    if session.get("employee_name") not in LIBERADOS:
-        flash("Organizar envio é liberado só para JULIANA e LUCAS.")
+    if not session.get("employee_name"):
+        flash("Entre com o seu nome para organizar o envio.")
         return redirect(url_for("lotes.painel"))
     rotulos = [r for r in request.form.getlist("lote") if r]
     if len(rotulos) != 1:
@@ -342,7 +341,7 @@ def organizar():
 
 @bp.route("/lotes/trabalho/<int:tid>/refazer", methods=["POST"])
 def refazer(tid):
-    if session.get("employee_name") not in LIBERADOS:
+    if not session.get("employee_name"):
         return redirect(url_for("lotes.painel"))
     if _trabalho_ativo() or _lock.locked():
         flash("Já tem um lote sendo organizado. Espere terminar.")

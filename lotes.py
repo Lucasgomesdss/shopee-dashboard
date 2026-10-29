@@ -347,7 +347,7 @@ TEMPLATE = """
   document.getElementById("lt-go").addEventListener("click",function(){
     var c=0,e=0; chks.forEach(function(x){if(x.checked){c++;e+=parseInt(x.dataset.n,10);}});
     if(!c){msg.textContent="Marque pelo menos um lote.";return;}
-    {% if not envio.pode %}msg.textContent="Organizar envio é liberado só para JULIANA e LUCAS.";return;{% endif %}
+    {% if not envio.pode %}msg.textContent="Entre com o seu nome para organizar o envio.";return;{% endif %}
     var lim=document.querySelector("input[name=limite]"); var n=(lim&&lim.value)?Math.min(parseInt(lim.value,10),e):e;
     if(confirm("Organizar o envio de "+n+" pedido(s) na Shopee e gerar o arquivo da Zebra?\n\nIsso muda o status na Shopee para 'A enviar/processado' e NÃO tem volta.")){
       document.getElementById("lt-go").disabled=true; document.getElementById("lt-form").submit();
