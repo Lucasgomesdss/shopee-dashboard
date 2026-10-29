@@ -148,6 +148,7 @@ def dashboard():
         shopee_connected=bool(token_row),
         shopee_shop_id=token_row["shop_id"] if token_row else None,
         credentials_configured=bool(PARTNER_ID and PARTNER_KEY),
+        fechamento_auto=agendador.ultimo("dia_finalizado"),
     )
 
 
@@ -307,6 +308,87 @@ def sync():
     return redirect(url_for("dashboard"))
 
 
+import threading as _threading
+
+_fechamento_lock = _threading.Lock()
+
+
+def finalizar_dia(client, pausa=0.0):
+    """Faz a conferência do 'Dia finalizado' (descrita na rota abaixo) e devolve as
+    contagens. Usada pelo botão e pelo fechamento automático das 18h; o lock garante
+    que os dois nunca rodam ao mesmo tempo. 'pausa' dá folga entre os lotes de 50
+    pedidos quando roda em segundo plano, pra não pesar no resto do sistema.
+    Devolve None se já houver um fechamento em andamento."""
+    if not _fechamento_lock.acquire(False):
+        return None
+    try:
+        archived_completed = 0
+        completed_sns = models.list_completed_order_sns(limit=500)
+        for i in range(0, len(completed_sns), 50):
+            batch = completed_sns[i:i + 50]
+            try:
+                details = client.get_order_detail(batch).get("response", {}).get("order_list", [])
+            except Exception:
+                continue
+            for od in details:
+                if od.get("order_status") != "PROCESSED" or od.get("fulfillment_flag") == "fulfilled_by_shopee":
+                    models.archive_order(od["order_sn"])
+                    archived_completed += 1
+            if pausa:
+                time.sleep(pausa)
+
+        archived_stale = 0
+        archived_fbs = 0
+        open_sns = models.list_open_order_sns(limit=500)
+        for i in range(0, len(open_sns), 50):
+            batch = open_sns[i:i + 50]
+            try:
+                details = client.get_order_detail(batch).get("response", {}).get("order_list", [])
+            except Exception:
+                continue
+            for od in details:
+                if od.get("fulfillment_flag") == "fulfilled_by_shopee":
+                    models.archive_order(od["order_sn"])
+                    archived_fbs += 1
+                elif od.get("order_status") != "PROCESSED":
+                    models.archive_order(od["order_sn"])
+                    archived_stale += 1
+            if pausa:
+                time.sleep(pausa)
+
+        revived = 0
+        archived_sns = models.list_archived_order_sns(limit=500)
+        for i in range(0, len(archived_sns), 50):
+            batch = archived_sns[i:i + 50]
+            try:
+                details = client.get_order_detail(batch).get("response", {}).get("order_list", [])
+            except Exception:
+                continue
+            for od in details:
+                if (
+                    od.get("order_status") == "PROCESSED"
+                    and od.get("fulfillment_flag") != "fulfilled_by_shopee"
+                ):
+                    models.revive_order(od["order_sn"])
+                    revived += 1
+            if pausa:
+                time.sleep(pausa)
+
+        return {"coletados": archived_completed, "sairam": archived_stale,
+                "fbs": archived_fbs, "voltaram": revived}
+    finally:
+        _fechamento_lock.release()
+
+
+def resumo_fechamento(r):
+    return (
+        f"Dia finalizado: {r['coletados']} pedido(s) coletado(s) removido(s) dos concluídos, "
+        f"{r['sairam']} pedido(s) que já saíram da Shopee removido(s) da fila de separação, "
+        f"{r['fbs']} pedido(s) Fulfilled by Shopee (estoque da Shopee) removido(s) da fila de separação, "
+        f"{r['voltaram']} pedido(s) que voltaram a ter etiqueta válida trazido(s) de volta pra A separar."
+    )
+
+
 @app.route("/dia-finalizado", methods=["POST"])
 def dia_finalizado():
     """Conferência de fim de dia (a parte mais pesada, por isso é sob demanda e não em
@@ -347,58 +429,11 @@ def dia_finalizado():
         flash("Nenhuma loja conectada ainda.")
         return redirect(url_for("dashboard"))
 
-    archived_completed = 0
-    completed_sns = models.list_completed_order_sns(limit=500)
-    for i in range(0, len(completed_sns), 50):
-        batch = completed_sns[i:i + 50]
-        try:
-            details = client.get_order_detail(batch).get("response", {}).get("order_list", [])
-        except Exception:
-            continue
-        for od in details:
-            if od.get("order_status") != "PROCESSED" or od.get("fulfillment_flag") == "fulfilled_by_shopee":
-                models.archive_order(od["order_sn"])
-                archived_completed += 1
-
-    archived_stale = 0
-    archived_fbs = 0
-    open_sns = models.list_open_order_sns(limit=500)
-    for i in range(0, len(open_sns), 50):
-        batch = open_sns[i:i + 50]
-        try:
-            details = client.get_order_detail(batch).get("response", {}).get("order_list", [])
-        except Exception:
-            continue
-        for od in details:
-            if od.get("fulfillment_flag") == "fulfilled_by_shopee":
-                models.archive_order(od["order_sn"])
-                archived_fbs += 1
-            elif od.get("order_status") != "PROCESSED":
-                models.archive_order(od["order_sn"])
-                archived_stale += 1
-
-    revived = 0
-    archived_sns = models.list_archived_order_sns(limit=500)
-    for i in range(0, len(archived_sns), 50):
-        batch = archived_sns[i:i + 50]
-        try:
-            details = client.get_order_detail(batch).get("response", {}).get("order_list", [])
-        except Exception:
-            continue
-        for od in details:
-            if (
-                od.get("order_status") == "PROCESSED"
-                and od.get("fulfillment_flag") != "fulfilled_by_shopee"
-            ):
-                models.revive_order(od["order_sn"])
-                revived += 1
-
-    flash(
-        f"Dia finalizado: {archived_completed} pedido(s) coletado(s) removido(s) dos concluídos, "
-        f"{archived_stale} pedido(s) que já saíram da Shopee removido(s) da fila de separação, "
-        f"{archived_fbs} pedido(s) Fulfilled by Shopee (estoque da Shopee) removido(s) da fila de separação, "
-        f"{revived} pedido(s) que voltaram a ter etiqueta válida trazido(s) de volta pra A separar."
-    )
+    r = finalizar_dia(client)
+    if r is None:
+        flash("O fechamento do dia já está rodando (automático ou de outro computador). Aguarde 1 a 2 minutos e atualize a página.")
+        return redirect(url_for("dashboard"))
+    flash(resumo_fechamento(r))
     return redirect(url_for("dashboard"))
 
 
@@ -526,6 +561,10 @@ devolucoes.init_app(app, get_shopee_client)
 import contestacoes
 
 contestacoes.init_app(app, get_shopee_client, devolucoes.return_sns_de)
+
+import agendador
+
+agendador.init_app(app, get_shopee_client, finalizar_dia, resumo_fechamento)
 
 
 if __name__ == "__main__":

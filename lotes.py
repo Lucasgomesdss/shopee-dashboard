@@ -282,7 +282,7 @@ TEMPLATE = """
 <div class="v2-h">
   <div>
     <h1>Etiquetas{% if not envio.pode %}<span class="v2-badge">Modo visualização</span>{% endif %}</h1>
-    <div class="v2-sub">{% if s.atualizado_em %}Atualizado em {{ s.atualizado_em }} · {% endif %}atualiza só quando você clicar em Atualizar agora</div>
+    <div class="v2-sub">{% if s.atualizado_em %}Atualizado em {{ s.atualizado_em }} · {% endif %}atualiza sozinho de segunda a sábado às 6:50 · ou clique em Atualizar agora</div>
   </div>
   <form method="post" action="{{ url_for('lotes.atualizar_agora') }}"><button type="submit" class="v2-btn">{{ ic.recarregar|safe }}Atualizar agora</button></form>
 </div>
