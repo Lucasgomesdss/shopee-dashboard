@@ -106,6 +106,7 @@ def calcular(client):
 
     contagem = Counter()
     resto = Counter()
+    membros = {}   # rótulo -> [(chave de ordenação, order_sn)]
     fbs = 0
     abertos = 0
     for i in range(0, len(prontos), 50):
@@ -119,6 +120,9 @@ def calcular(client):
             abertos += 1
             itens = od.get("item_list") or []
             rotulo = classificar(itens)
+            chave = " | ".join(
+                "%s %s" % (_norm(i.get("item_name")), _norm(i.get("model_name"))) for i in itens
+            )
             if rotulo is None:
                 rotulo = "_RESTO"
                 if itens:
@@ -126,6 +130,7 @@ def calcular(client):
                     var = itens[0].get("model_name")
                     resto[nome + (" / " + var if var else "")] += 1
             contagem[rotulo] += 1
+            membros.setdefault(rotulo, []).append((chave, od["order_sn"]))
 
     processados = 0
     for i in range(0, len(processados_sn), 50):
@@ -138,6 +143,7 @@ def calcular(client):
 
     unitarios = contagem.pop("_RESTO", 0)
     sem_filtro = unitarios
+    pedidos = {LABEL_UNITARIOS: list(membros.get("_RESTO", []))}
     lotes = []
     absorvidos = []
     mais = contagem.pop(LABEL_MAIS_DE_1, 0)
@@ -149,9 +155,13 @@ def calcular(client):
             continue
         if n >= MIN_ETIQUETAS:
             lotes.append({"label": rotulo, "count": n, "nota": ""})
+            pedidos[rotulo] = list(membros.get(rotulo, []))
         else:
             absorvidos.append("%s %d" % (rotulo, n))
             unitarios += n
+            pedidos[LABEL_UNITARIOS].extend(membros.get(rotulo, []))
+    if mais:
+        pedidos[LABEL_MAIS_DE_1] = list(membros.get(LABEL_MAIS_DE_1, []))
     if unitarios:
         partes = list(absorvidos)
         if sem_filtro:
@@ -169,6 +179,8 @@ def calcular(client):
         "resto_top": resto.most_common(20),
         "minimo": MIN_ETIQUETAS,
         "erro": None,
+        # Pedidos de cada lote, ordenados por produto (mesmo produto fica junto no arquivo).
+        "pedidos": {k: [sn for _, sn in sorted(v)] for k, v in pedidos.items() if v},
     }
 
 
@@ -249,13 +261,24 @@ TEMPLATE = """
 <div class="v2-wrap">
 <div class="v2-h">
   <div>
-    <h1>Etiquetas<span class="v2-badge">Modo visualização</span></h1>
+    <h1>Etiquetas{% if not envio.pode %}<span class="v2-badge">Modo visualização</span>{% endif %}</h1>
     <div class="v2-sub">{% if s.atualizado_em %}Atualizado em {{ s.atualizado_em }} · {% endif %}atualiza só quando você clicar em Atualizar agora</div>
   </div>
   <form method="post" action="{{ url_for('lotes.atualizar_agora') }}"><button type="submit" class="v2-btn">{{ ic.recarregar|safe }}Atualizar agora</button></form>
 </div>
 {% if rodando %}<div class="v2-flash">Atualizando as etiquetas... esta página recarrega sozinha.</div><script>setTimeout(function(){location.reload()},5000)</script>{% endif %}
 {% if s.erro %}<div class="v2-flash">Não consegui atualizar agora: {{ s.erro }}</div>{% endif %}
+{% set t = envio.trabalho %}
+{% if t %}
+<div class="v2-flash" style="{% if t.status == 'erro' %}border-color:#e05252{% endif %}">
+  <b>{% if t.status == 'rodando' %}Organizando envio…{% elif t.status == 'concluido' %}Último envio organizado{% else %}O último envio parou{% endif %}</b>
+  — {{ t.etapa }} · {{ t.n_org }} de {{ t.total }} pedido(s) organizados{% if t.iniciado_por %} · por {{ t.iniciado_por }}{% endif %}
+  {% if t.falhas_l %}<details style="margin-top:6px"><summary>{{ t.falhas_l|length }} pedido(s) com problema</summary>
+    <ul style="margin:6px 0 0 18px">{% for f in t.falhas_l[:60] %}<li><span style="font-family:monospace">{{ f[0] }}</span> — {{ f[1] }}</li>{% endfor %}</ul></details>{% endif %}
+  {% if t.status == 'erro' and t.n_org and envio.pode %}<form method="post" action="{{ url_for('lotes_envio.refazer', tid=t.id) }}" style="margin-top:8px"><button class="v2-btn sec" type="submit">Gerar arquivo dos já organizados</button></form>{% endif %}
+</div>
+{% if envio.ativo %}<script>setTimeout(function(){location.reload()},5000)</script>{% endif %}
+{% endif %}
 {% if 'lotes' in s %}
 <div class="v2-cards">
   <div class="v2-card y"><span class="ci">{{ ic.pendente|safe }}</span><div><div class="l">Total do dia</div><div class="n">{{ s.total }}</div></div></div>
@@ -272,16 +295,20 @@ TEMPLATE = """
 <div class="v2-list">
   {% for l in s.lotes %}
   <label class="v2-lote">
-    <input type="checkbox" class="lt-chk" data-n="{{ l.count }}" data-nome="{{ l.label }}">
+    <input type="checkbox" class="lt-chk" name="lote" value="{{ l.label }}" form="lt-form" data-n="{{ l.count }}" data-nome="{{ l.label }}">
     <span class="v2-lt"><b>{{ l.label }}</b>{% if l.nota %}<small>{{ l.nota }}</small>{% endif %}</span>
     <span class="v2-cnt">{{ l.count }}</span>
   </label>
   {% endfor %}
 </div>
+<form id="lt-form" method="post" action="{{ url_for('lotes_envio.organizar') }}"></form>
 <div class="v2-bar">
   <div class="t"><span id="lt-sel">Nenhum arquivo selecionado</span><b id="lt-tot">0</b> <span style="display:inline">etiquetas</span> <span class="v2-msg" id="lt-msg"></span></div>
-  <button type="button" class="v2-btn" id="lt-go">{{ ic.baixar|safe }}Gerar arquivo</button>
+  {% if envio.pode %}<label style="font-size:13px;display:flex;align-items:center;gap:6px">Quantidade (teste)
+    <input type="number" name="limite" form="lt-form" min="1" placeholder="todos" style="width:80px;font:inherit;padding:6px 8px;border:1px solid #c7ccd6;border-radius:8px"></label>{% endif %}
+  <button type="button" class="v2-btn" id="lt-go" {% if envio.ativo %}disabled{% endif %}>{{ ic.baixar|safe }}Organizar envio e gerar arquivo</button>
 </div>
+
 <script>
 (function(){
   var chks=document.querySelectorAll(".lt-chk"), sel=document.getElementById("lt-sel"), tot=document.getElementById("lt-tot"), msg=document.getElementById("lt-msg");
@@ -299,13 +326,28 @@ TEMPLATE = """
   document.getElementById("lt-all").addEventListener("click",function(){chks.forEach(function(x){x.checked=true;});upd();});
   document.getElementById("lt-none").addEventListener("click",function(){chks.forEach(function(x){x.checked=false;});upd();});
   document.getElementById("lt-go").addEventListener("click",function(){
-    var c=0; chks.forEach(function(x){if(x.checked)c++;});
-    msg.textContent=c?"A geração ainda está desativada: o painel está em modo visualização.":"Marque pelo menos um arquivo.";
+    var c=0,e=0; chks.forEach(function(x){if(x.checked){c++;e+=parseInt(x.dataset.n,10);}});
+    if(!c){msg.textContent="Marque pelo menos um lote.";return;}
+    {% if not envio.pode %}msg.textContent="Organizar envio é liberado só para JULIANA e LUCAS.";return;{% endif %}
+    var lim=document.querySelector("input[name=limite]"); var n=(lim&&lim.value)?Math.min(parseInt(lim.value,10),e):e;
+    if(confirm("Organizar o envio de "+n+" pedido(s) na Shopee e gerar o arquivo da Zebra?\n\nIsso muda o status na Shopee para 'A enviar/processado' e NÃO tem volta.")){
+      document.getElementById("lt-go").disabled=true; document.getElementById("lt-form").submit();
+    }
   });
 })();
 </script>
 {% else %}
 <p>Ainda sem dados. Clique em "Atualizar agora".</p>
+{% endif %}
+{% if envio.arquivos %}
+<div class="v2-sec"><h2>Arquivos gerados</h2></div>
+<div class="v2-list">
+  {% for a in envio.arquivos %}
+  <div class="v2-lote" style="cursor:default"><span class="v2-lt"><b>{{ a.lote }}</b><small>{{ a.quando }} · {{ a.nome }}</small></span>
+    <span class="v2-cnt">{{ a.qtd }}</span>
+    <a class="v2-btn sec" href="{{ url_for('lotes_envio.baixar', aid=a.id) }}">{{ ic.baixar|safe }}Baixar .txt</a></div>
+  {% endfor %}
+</div>
 {% endif %}
 </div>
 """
@@ -313,7 +355,9 @@ TEMPLATE = """
 
 @bp.route("/lotes")
 def painel():
-    return render_page("Etiquetas", "etiquetas", TEMPLATE, s=_ler(), ic=ICONES, rodando=_rodando[0])
+    import lotes_envio
+    return render_page("Etiquetas", "etiquetas", TEMPLATE, s=_ler(), ic=ICONES, rodando=_rodando[0],
+                       envio=lotes_envio.resumo_tela())
 
 
 @bp.route("/lotes/atualizar", methods=["POST"])
@@ -329,3 +373,5 @@ def init_app(app, get_client):
     app.register_blueprint(bp)
     import reimpressao
     reimpressao.init_app(app, get_client)
+    import lotes_envio
+    lotes_envio.init_app(app, get_client)
