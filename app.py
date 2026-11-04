@@ -16,6 +16,63 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "troque-esta-chave-em-producao")
 app.jinja_env.filters["fromjson"] = json.loads
 
+
+# ---------------------------------------------------------------------------
+# Proteção contra robôs que varrem a internet atrás de falhas (wp-admin,
+# phpmyadmin, .env...). Em 04/11 um deles mandava ~10 pedidos por segundo e
+# deixou o servidor a 100% de processador, travando a bipagem. Cada tentativa
+# era redirecionada para a tela de login, que monta a página e consulta o banco.
+# Agora: endereço que não existe no Dashboard responde 404 vazio na hora (sem
+# sessão, sem banco, sem página), o robô conhecido é barrado, e um mesmo IP que
+# passar de 300 pedidos em 10 segundos espera um pouco (a equipe usa bem menos).
+# ---------------------------------------------------------------------------
+import threading as _thr
+from collections import deque as _deque
+
+_ROBO_UA = ("rv:90.0) Gecko/20100101 Firefox/90.0",)
+_LIMITE_PEDIDOS = 300
+_JANELA_SEG = 10
+_acessos = {}
+_acessos_lock = _thr.Lock()
+
+
+def _ip_real():
+    xff = request.headers.get("X-Forwarded-For", "")
+    return (xff.split(",")[0].strip() if xff else request.remote_addr) or "?"
+
+
+@app.before_request
+def barrar_robos():
+    if request.endpoint is None:          # rota que não existe no Dashboard
+        return ("", 404)
+    ua = request.headers.get("User-Agent", "")
+    if any(x in ua for x in _ROBO_UA):
+        return ("", 403)
+    if request.endpoint == "static":
+        return None
+    agora = time.time()
+    ip = _ip_real()
+    with _acessos_lock:
+        fila = _acessos.get(ip)
+        if fila is None:
+            if len(_acessos) > 5000:      # não deixa crescer sem limite
+                _acessos.clear()
+            fila = _acessos[ip] = _deque()
+        while fila and fila[0] < agora - _JANELA_SEG:
+            fila.popleft()
+        fila.append(agora)
+        excesso = len(fila) > _LIMITE_PEDIDOS
+    if excesso:
+        return ("Muitos acessos seguidos. Aguarde alguns segundos.", 429)
+    return None
+
+
+def _destino_seguro(destino):
+    """Só aceita voltar para uma página do próprio Dashboard depois do login."""
+    if destino and destino.startswith("/") and not destino.startswith("//") and "\\" not in destino:
+        return destino
+    return None
+
 PARTNER_ID = os.environ.get("SHOPEE_PARTNER_ID")
 PARTNER_KEY = os.environ.get("SHOPEE_PARTNER_KEY")
 USE_MOCK_DATA = os.environ.get("USE_MOCK_DATA", "true").lower() == "true"
@@ -95,7 +152,10 @@ def inject_employee_name():
 @app.context_processor
 def inject_sidebar_counts():
     """Deixa os contadores (a separar / falta produto / separados) disponíveis em
-    todas as páginas, pra mostrar na barra lateral sem precisar repetir em cada rota."""
+    todas as páginas, pra mostrar na barra lateral sem precisar repetir em cada rota.
+    Só consulta o banco para quem está logado (a tela de login não mostra a barra)."""
+    if not session.get("employee_name"):
+        return {"sidebar_counts": {}}
     return {"sidebar_counts": models.counts()}
 
 
@@ -125,7 +185,7 @@ def set_name():
             and password == SEPARADOR_PASSWORD
         ):
             session["employee_name"] = username
-            return redirect(request.args.get("next") or url_for("dashboard"))
+            return redirect(_destino_seguro(request.args.get("next")) or url_for("dashboard"))
         flash("Usuário ou senha inválidos.")
     return render_template("set_name.html", users=SEPARADOR_USERS)
 
