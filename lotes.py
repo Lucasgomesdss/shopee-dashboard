@@ -349,7 +349,7 @@ TEMPLATE = """
     if(!c){msg.textContent="Marque pelo menos um lote.";return;}
     {% if not envio.pode %}msg.textContent="Entre com o seu nome para organizar o envio.";return;{% endif %}
     var lim=document.querySelector("input[name=limite]"); var n=(lim&&lim.value)?Math.min(parseInt(lim.value,10),e):e;
-    if(confirm("Organizar o envio de "+n+" pedido(s) na Shopee e gerar o arquivo da Zebra?\n\nIsso muda o status na Shopee para 'A enviar/processado' e NÃO tem volta.")){
+    if(confirm("Organizar o envio de "+n+" pedido(s) na Shopee e gerar o arquivo da Zebra?\\n\\nIsso muda o status na Shopee para 'A enviar/processado' e NÃO tem volta.")){
       document.getElementById("lt-go").disabled=true; document.getElementById("lt-form").submit();
     }
   });
