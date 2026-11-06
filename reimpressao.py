@@ -6,6 +6,7 @@ nada) e devolve um .txt com o ZPL dos pedidos marcados.
 """
 
 import io
+import logging
 import re
 import time
 import zipfile
@@ -14,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, Response, flash, redirect, request, url_for
 
 import models
+
+log = logging.getLogger(__name__)
 
 bp = Blueprint("reimpressao", __name__)
 
@@ -66,19 +69,39 @@ def _entrada(sn, pacote, rastreio):
     return e
 
 
-def _lote(client, sns, falhas):
-    """Devolve o texto ZPL dos pedidos do lote. Pedidos com problema vão para `falhas`."""
+def _rastreio_shopee(client, sn):
+    """Rastreio completo direto da Shopee (inclui o sufixo SPXLM dos pedidos de retirada)."""
+    try:
+        r = client._shop_request("GET", "/api/v2/logistics/get_tracking_number", params={"order_sn": sn})
+        return ((r.get("response") or {}).get("tracking_number") or "").strip()
+    except Exception:
+        return ""
+
+
+def _lote(client, sns, falhas, rastreios_frescos=None):
+    """Devolve o texto ZPL dos pedidos do lote. Pedidos com problema vão para `falhas`.
+
+    Rastreio usado para pedir a etiqueta, nesta ordem:
+      1) `rastreios_frescos` (lido da Shopee logo depois de organizar o envio);
+      2) o que vier no get_order_detail;
+      3) get_tracking_number na hora.
+    Nunca usa o rastreio do banco local: lá ele fica cortado de propósito (sem o
+    sufixo SPXLM dos pedidos de retirada, para a bipagem funcionar) e pode estar
+    vazio logo depois de organizar — a Shopee recusa os dois casos."""
+    rastreios_frescos = rastreios_frescos or {}
     det = client.get_order_detail(sns).get("response", {}).get("order_list", [])
     pacotes = {}
     rastreios = {}
     for od in det:
         pkg = (od.get("package_list") or [{}])[0]
         pacotes[od["order_sn"]] = pkg.get("package_number")
-        rastreios[od["order_sn"]] = pkg.get("tracking_number")
+        rastreios[od["order_sn"]] = (pkg.get("tracking_number") or "").strip()
     for sn in sns:
-        local = models.get_order(sn)
-        if local and local.get("tracking_number"):
-            rastreios[sn] = local["tracking_number"]
+        if rastreios_frescos.get(sn):
+            rastreios[sn] = rastreios_frescos[sn]
+        elif sn in pacotes and not rastreios.get(sn):
+            rastreios[sn] = _rastreio_shopee(client, sn)
+            time.sleep(0.2)
     for sn in sns:
         if sn not in pacotes:
             falhas.append((sn, "pedido não encontrado na Shopee"))
@@ -111,9 +134,16 @@ def _lote(client, sns, falhas):
     saida = []
     for tipo, ordens in por_tipo.items():
         com_tipo = [dict(o, shipping_document_type=tipo) for o in ordens]
+        for o in com_tipo:
+            log.warning("etiqueta: pedindo %s rastreio=%s pacote=%s tipo=%s",
+                        o["order_sn"], o.get("tracking_number") or "(nenhum)", o.get("package_number") or "-", tipo)
         cri = _json(_post(client, "/api/v2/logistics/create_shipping_document", {"order_list": com_tipo}))
         ok = []
         falhou = {r.get("order_sn"): r for r in (cri.get("response") or {}).get("result_list", []) if r.get("fail_error")}
+        if cri.get("error") or falhou:
+            log.warning("etiqueta: create_shipping_document recusou: erro=%s msg=%s falhas=%s",
+                        cri.get("error"), cri.get("message"),
+                        {k: (v.get("fail_error"), v.get("fail_message")) for k, v in falhou.items()})
         if cri.get("error") and not (cri.get("response") or {}).get("result_list"):
             for o in ordens:
                 falhas.append((o["order_sn"], "criar: " + str(cri.get("message") or cri.get("error"))))

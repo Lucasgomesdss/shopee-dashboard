@@ -151,8 +151,11 @@ def _status(client, sns):
 
 
 def _esperar_rastreios(client, sns, tid):
-    """Espera a Shopee gerar o rastreio dos pedidos recém-organizados."""
+    """Espera a Shopee gerar o rastreio dos pedidos recém-organizados.
+    Devolve (faltam, rastreios): os que ainda não têm rastreio e o rastreio
+    completo de cada um que já tem (é esse que vai no pedido da etiqueta)."""
     faltam = list(sns)
+    rastreios = {}
     ini = time.time()
     while faltam and time.time() - ini < ESPERA_RASTREIO:
         novos = []
@@ -162,22 +165,24 @@ def _esperar_rastreios(client, sns, tid):
                 tn = ((r.get("response") or {}).get("tracking_number") or "").strip()
             except Exception:
                 tn = ""
-            if not tn:
+            if tn:
+                rastreios[sn] = tn
+            else:
                 novos.append(sn)
             time.sleep(0.2)
         faltam = novos
         _upd(tid, etapa=f"Aguardando a Shopee gerar o rastreio ({len(sns) - len(faltam)}/{len(sns)})")
         if faltam:
             time.sleep(4)
-    return faltam
+    return faltam, rastreios
 
 
-def _gerar_arquivo(client, tid, lote, sns, falhas):
+def _gerar_arquivo(client, tid, lote, sns, falhas, rastreios=None):
     """Baixa o ZPL dos pedidos (na ordem dada) e guarda um .txt para este lote."""
     textos = []
     for i in range(0, len(sns), reimpressao.LOTE):
         _upd(tid, etapa=f"Baixando etiquetas de {lote} ({i}/{len(sns)})")
-        t = reimpressao._lote(client, sns[i:i + reimpressao.LOTE], falhas)
+        t = reimpressao._lote(client, sns[i:i + reimpressao.LOTE], falhas, rastreios_frescos=rastreios)
         if t:
             textos.append(t)
     if not textos:
@@ -243,13 +248,13 @@ def _rodar(tid, rotulos, limite):
                     time.sleep(PAUSA)
                 if not feitos:
                     continue
-                sem_rastreio = _esperar_rastreios(client, feitos, tid)
+                sem_rastreio, rastreios = _esperar_rastreios(client, feitos, tid)
                 for sn in sem_rastreio:
                     falhas.append([sn, "a Shopee ainda não gerou o rastreio — use “Gerar arquivo dos já organizados” daqui a pouco"])
                 prontos = [sn for sn in feitos if sn not in set(sem_rastreio)]
                 f_lote = []
                 if prontos:
-                    _gerar_arquivo(client, tid, lote, prontos, f_lote)
+                    _gerar_arquivo(client, tid, lote, prontos, f_lote, rastreios)
                 falhas.extend([list(x) for x in f_lote])
                 _upd(tid, organizados=organizados, falhas=falhas)
             _upd(tid, status="concluido", etapa="Pronto", organizados=organizados, falhas=falhas, fim_em=_agora())
@@ -274,11 +279,11 @@ def _refazer_arquivo(tid):
         _upd(tid, status="rodando", etapa="Gerando arquivo dos já organizados")
         try:
             client = _get_client[0]()
-            pendentes = _esperar_rastreios(client, sns, tid)
+            pendentes, rastreios = _esperar_rastreios(client, sns, tid)
             prontos = [sn for sn in sns if sn not in set(pendentes)]
             f = []
             if prontos:
-                _gerar_arquivo(client, tid, "JÁ ORGANIZADOS", prontos, f)
+                _gerar_arquivo(client, tid, "JÁ ORGANIZADOS", prontos, f, rastreios)
             falhas = [x for x in falhas if x[0] not in set(sns)] + [list(x) for x in f] + \
                      [[sn, "ainda sem rastreio na Shopee"] for sn in pendentes]
             _upd(tid, status="concluido", etapa="Pronto", falhas=falhas, fim_em=_agora())
