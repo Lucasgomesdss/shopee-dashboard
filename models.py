@@ -127,12 +127,20 @@ def upsert_order(order_sn: str, tracking_number: str, items: list, shipping_carr
                     (tracking_number, json.dumps(items), shipping_carrier, now, order_sn),
                 )
         else:
-            conn.execute(
-                """INSERT INTO orders
+            # OR IGNORE + UPDATE: se outra sincronização inseriu o mesmo pedido entre o
+            # SELECT acima e este INSERT (duas pessoas clicando em Sincronizar ao mesmo
+            # tempo), em vez de quebrar com 'UNIQUE constraint failed' só atualiza.
+            n = conn.execute(
+                """INSERT OR IGNORE INTO orders
                    (order_sn, tracking_number, items_json, status, shipping_carrier, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (order_sn, tracking_number, json.dumps(items), STATUS_TO_SEPARATE, shipping_carrier, now, now),
-            )
+            ).rowcount
+            if not n:
+                conn.execute(
+                    "UPDATE orders SET tracking_number = ?, items_json = ?, shipping_carrier = ?, updated_at = ? WHERE order_sn = ?",
+                    (tracking_number, json.dumps(items), shipping_carrier, now, order_sn),
+                )
 
 
 def filter_needs_sync(order_sns: list):
