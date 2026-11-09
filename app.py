@@ -238,6 +238,25 @@ def shopee_callback():
     return redirect(url_for("dashboard"))
 
 
+_sync_lock = __import__("threading").Lock()
+
+
+def _buscar_rastreios(client, sns, threads=6):
+    """Busca o rastreio de vários pedidos na API de logística da Shopee, em paralelo.
+    Devolve {order_sn: rastreio} só com os que vieram preenchidos."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def um(sn):
+        try:
+            r = client.get_tracking_number(sn)
+            return sn, (r.get("response", {}).get("tracking_number") or "").strip()
+        except Exception:
+            return sn, ""
+
+    with ThreadPoolExecutor(max_workers=threads) as ex:
+        return {sn: tn for sn, tn in ex.map(um, sns) if tn}
+
+
 @app.route("/sync", methods=["POST"])
 def sync():
     """Busca pedidos com etiqueta já gerada (status PROCESSED = 'envios processados'
@@ -271,6 +290,20 @@ def sync():
         flash("Nenhuma loja conectada ainda. Autorize pelo Console da Shopee primeiro (veja o README).")
         return redirect(url_for("dashboard"))
 
+    # Uma sincronização por vez: se alguém já clicou, a segunda espera a primeira
+    # terminar (até 2 min) e aí roda rapidinho, porque os pedidos já estarão salvos.
+    # Sem isso, duas pessoas sincronizando juntas dobravam as consultas à Shopee e
+    # podiam quebrar com erro ao gravar o mesmo pedido duas vezes.
+    if not _sync_lock.acquire(timeout=120):
+        flash("Já tem uma sincronização em andamento. Aguarde um pouco e atualize a página.")
+        return redirect(url_for("dashboard"))
+    try:
+        return _sincronizar(client)
+    finally:
+        _sync_lock.release()
+
+
+def _sincronizar(client):
     now = int(time.time())
     lookback_days = 3
     window_days = 15  # limite máximo da Shopee por chamada
@@ -308,12 +341,33 @@ def sync():
             for i in range(0, len(to_refresh), 50):
                 batch = to_refresh[i:i + 50]
                 details = client.get_order_detail(batch).get("response", {}).get("order_list", [])
+                pedidos = []
                 for od in details:
                     # FBS (Fulfilled by Shopee): o estoque fica no centro de distribuição da
                     # Shopee, não no nosso -- esse pedido nunca passa pela nossa separação.
                     if od.get("fulfillment_flag") == "fulfilled_by_shopee":
                         skipped_fbs += 1
                         continue
+                    pedidos.append(od)
+
+                rastreios = {}
+                sem_rastreio = []
+                for od in pedidos:
+                    packages = od.get("package_list") or []
+                    tn = packages[0].get("tracking_number") if packages else None
+                    if tn:
+                        rastreios[od["order_sn"]] = tn
+                    else:
+                        sem_rastreio.append(od["order_sn"])
+                if sem_rastreio:
+                    # Etiqueta já foi gerada (só buscamos PROCESSED), então o rastreio
+                    # deveria existir -- mas o get_order_detail quase sempre vem com ele
+                    # vazio, e aí buscamos direto na API de logística. Antes isso era um
+                    # pedido por vez, o que deixava a sincronização muito lenta nos dias de
+                    # muito pedido novo (segunda-feira). Agora vão 6 consultas em paralelo.
+                    rastreios.update(_buscar_rastreios(client, sem_rastreio))
+
+                for od in pedidos:
                     items = [
                         {
                             "name": it.get("item_name"),
@@ -324,19 +378,7 @@ def sync():
                         }
                         for it in od.get("item_list", [])
                     ]
-                    tracking = None
-                    packages = od.get("package_list") or []
-                    if packages:
-                        tracking = packages[0].get("tracking_number")
-                    if not tracking:
-                        # Etiqueta já foi gerada (só buscamos PROCESSED), então o
-                        # rastreio deveria existir — busca direto na API de
-                        # logística como reforço, caso não venha no detalhe.
-                        try:
-                            tn_resp = client.get_tracking_number(od["order_sn"])
-                            tracking = tn_resp.get("response", {}).get("tracking_number") or None
-                        except Exception:
-                            tracking = None
+                    tracking = rastreios.get(od["order_sn"]) or None
                     if tracking and "SPXLM" in tracking:
                         # Pedidos de retirada via ponto SPX Locker vêm com o código de
                         # rastreio real (o que está impresso na etiqueta e o que o time
