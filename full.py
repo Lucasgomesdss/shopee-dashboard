@@ -7,7 +7,7 @@ bipagem nem em nada da operação. Tabelas próprias (full_*).
   consulta o detalhe só dos que ainda não conhece e guarda os que são Full
   (fulfillment_flag = fulfilled_by_shopee), com os itens. Os pedidos Full dos últimos
   3 dias são reconferidos para tirar os cancelados. Na primeira vez, busca os
-  últimos 30 dias.
+  últimos 60 dias.
 - Estoque: uma vez por dia de madrugada (ou no botão), lê o estoque de todos os
   anúncios: o que está nos armazéns da Shopee (shopee_stock = Full) e o que está no
   galpão (seller_stock).
@@ -28,7 +28,9 @@ bp = Blueprint("full", __name__)
 BRT = timezone(timedelta(hours=-3))
 LIBERADOS = {"JULIANA", "LUCAS"}
 PAUSA = 0.25                         # segundos entre consultas à Shopee
-DIAS_INICIAIS = 30                   # histórico buscado na primeira vez
+HISTORICO_DIAS = 60                  # histórico mantido (para comparar períodos)
+ABERTOS = ("READY_TO_SHIP", "PROCESSED", "RETRY_SHIP")   # Full ainda não despachou
+IPI_PADRAO = 6.5                     # % de IPI somado ao preço de custo do Bling
 RECONFERIR_DIAS = 3                  # pedidos Full reconferidos (cancelamentos)
 STATUS_FORA = ("UNPAID", "CANCELLED", "IN_CANCEL")
 HORA_ESTOQUE = 5                     # atualização diária do estoque, às 5h
@@ -94,6 +96,9 @@ def init_db():
             conn.execute("ALTER TABLE full_custos ADD COLUMN saldo REAL")
         if "formato" not in cols:
             conn.execute("ALTER TABLE full_custos ADD COLUMN formato TEXT")
+        for tabela in ("full_itens", "full_estoque"):
+            if "imagem" not in {r["name"] for r in conn.execute(f"PRAGMA table_info({tabela})")}:
+                conn.execute(f"ALTER TABLE {tabela} ADD COLUMN imagem TEXT")
 
 
 def _meta(chave, valor=None):
@@ -157,8 +162,9 @@ def coletar_pedidos(client=None):
         if client is None:
             raise RuntimeError("Loja não conectada à Shopee.")
         agora = int(time.time())
-        primeira = _meta("pedidos_inicio") is None
-        desde = agora - (DIAS_INICIAIS * 86400 if primeira else 26 * 3600)
+        inicio_hist = agora - HISTORICO_DIAS * 86400
+        primeira = (_meta("pedidos_inicio") or "9999") > _dia(inicio_hist + 86400)
+        desde = inicio_hist if primeira else agora - 26 * 3600
         sns = _listar_pedidos(client, desde, agora)
 
         limite_reconf = agora - RECONFERIR_DIAS * 86400
@@ -169,8 +175,13 @@ def coletar_pedidos(client=None):
                 q = ",".join("?" * len(parte))
                 for r in conn.execute(f"SELECT order_sn, fbs, create_time FROM full_vistos WHERE order_sn IN ({q})", parte):
                     vistos[r["order_sn"]] = r
+            # Recentes (cancelamentos) e os que ainda estão em aberto (para saber quando
+            # o Full despachou).
+            abertos = ",".join("?" * len(ABERTOS))
             reconf = [r["order_sn"] for r in conn.execute(
-                "SELECT order_sn FROM full_vistos WHERE fbs = 1 AND create_time >= ?", (limite_reconf,))]
+                f"""SELECT v.order_sn FROM full_vistos v LEFT JOIN full_pedidos p ON p.order_sn = v.order_sn
+                    WHERE v.fbs = 1 AND (v.create_time >= ? OR (p.status IN ({abertos}) AND v.create_time >= ?))""",
+                (limite_reconf, *ABERTOS, agora - 20 * 86400))]
 
         # Consulta: os que nunca vimos + os do Full recentes (status pode ter mudado).
         consultar = [sn for sn in sns if sn not in vistos]
@@ -212,13 +223,14 @@ def coletar_pedidos(client=None):
                     conn.execute("DELETE FROM full_itens WHERE order_sn = ?", (sn,))
                     for it in od.get("item_list", []):
                         conn.execute(
-                            "INSERT OR REPLACE INTO full_itens (order_sn, item_id, model_id, sku, nome, variacao, qtd) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            "INSERT OR REPLACE INTO full_itens (order_sn, item_id, model_id, sku, nome, variacao, qtd, imagem) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                             (
                                 sn, int(it.get("item_id") or 0), int(it.get("model_id") or 0),
                                 (it.get("model_sku") or it.get("item_sku") or "").strip(),
                                 it.get("item_name") or "", it.get("model_name") or "",
                                 int(it.get("model_quantity_purchased") or 1),
+                                (it.get("image_info") or {}).get("image_url") or "",
                             ),
                         )
         if primeira:
@@ -265,24 +277,31 @@ def atualizar_estoque(client=None):
             base = _get(client, "/api/v2/product/get_item_base_info",
                         item_id_list=",".join(str(x) for x in ids[i:i + 50])).get("item_list", [])
             for it in base:
+                img = ((it.get("image") or {}).get("image_url_list") or [""])[0]
                 if it.get("has_model"):
-                    com_variacao.append((it["item_id"], it.get("item_name") or ""))
+                    com_variacao.append((it["item_id"], it.get("item_name") or "", img))
                     continue
                 full, locais, galpao = _estoques(it.get("stock_info_v2"))
-                linhas.append((it["item_id"], 0, (it.get("item_sku") or "").strip(), it.get("item_name") or "", "", full, locais, galpao))
+                linhas.append((it["item_id"], 0, (it.get("item_sku") or "").strip(), it.get("item_name") or "", "", full, locais, galpao, img))
 
-        for item_id, nome in com_variacao:
+        for item_id, nome, img in com_variacao:
             resp = _get(client, "/api/v2/product/get_model_list", item_id=item_id)
+            opcoes = ((resp.get("tier_variation") or [{}])[0].get("option_list") or [])
             for m in resp.get("model", []):
                 full, locais, galpao = _estoques(m.get("stock_info_v2"))
+                img_var = img
+                try:
+                    img_var = ((opcoes[(m.get("tier_index") or [0])[0]].get("image") or {}).get("image_url")) or img
+                except (IndexError, AttributeError):
+                    pass
                 linhas.append((item_id, int(m["model_id"]), (m.get("model_sku") or "").strip(), nome,
-                               m.get("model_name") or "", full, locais, galpao))
+                               m.get("model_name") or "", full, locais, galpao, img_var))
 
         with models.get_conn() as conn:
             conn.execute("DELETE FROM full_estoque")
             conn.executemany(
-                "INSERT OR REPLACE INTO full_estoque (item_id, model_id, sku, nome, variacao, full_qtd, full_locais, galpao_qtd) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO full_estoque (item_id, model_id, sku, nome, variacao, full_qtd, full_locais, galpao_qtd, imagem) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 linhas,
             )
         _meta("estoque_atualizado", _agora().isoformat())
@@ -403,18 +422,41 @@ def _num(v):
     return f"{int(v):,}".replace(",", ".")
 
 
+def ipi_pct():
+    try:
+        return float(_meta("ipi_pct") or IPI_PADRAO)
+    except ValueError:
+        return IPI_PADRAO
+
+
+def _var(atual, anterior):
+    """Variação percentual (None quando não há base de comparação)."""
+    if not anterior:
+        return None
+    return (atual - anterior) / anterior * 100
+
+
 def dados_painel(periodo=7):
     hoje = _agora().date()
-    dias7 = [(hoje - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6, -1, -1)]
-    dias_periodo = [(hoje - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(periodo - 1, -1, -1)]
-    dias14 = [(hoje - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(13, -1, -1)]
+    d = lambda n: (hoje - timedelta(days=n)).strftime("%Y-%m-%d")
+    dias7 = [d(i) for i in range(6, -1, -1)]
+    dias_periodo = [d(i) for i in range(periodo - 1, -1, -1)]
+    dias14 = [d(i) for i in range(13, -1, -1)]
+    # Comparação só com dias completos (hoje ainda está acontecendo): os últimos N dias
+    # fechados contra os N dias antes deles.
+    comp_atual = [d(i) for i in range(periodo, 0, -1)]
+    comp_ant = [d(i) for i in range(2 * periodo, periodo, -1)]
+    sete_atual = [d(i) for i in range(7, 0, -1)]
+    sete_ant = [d(i) for i in range(14, 7, -1)]
     fora = ",".join("?" * len(STATUS_FORA))
-    inicio = min(dias_periodo[0], dias14[0])
+    abertos_q = ",".join("?" * len(ABERTOS))
+    inicio = min(dias_periodo[0], dias14[0], comp_ant[0])
+    fator_ipi = 1 + ipi_pct() / 100
 
     with models.get_conn() as conn:
         vendas = conn.execute(
-            f"""SELECT p.dia, i.item_id, i.model_id, i.sku, i.nome, i.variacao, SUM(i.qtd) AS q,
-                       COUNT(DISTINCT p.order_sn) AS pedidos
+            f"""SELECT p.dia, i.item_id, i.model_id, i.sku, i.nome, i.variacao, MAX(i.imagem) AS imagem,
+                       SUM(i.qtd) AS q, COUNT(DISTINCT p.order_sn) AS pedidos
                 FROM full_itens i JOIN full_pedidos p ON p.order_sn = i.order_sn
                 WHERE p.dia >= ? AND p.status NOT IN ({fora})
                 GROUP BY p.dia, i.item_id, i.model_id""",
@@ -423,29 +465,34 @@ def dados_painel(periodo=7):
         pedidos_dia = {r["dia"]: r["n"] for r in conn.execute(
             f"SELECT dia, COUNT(*) AS n FROM full_pedidos WHERE dia >= ? AND status NOT IN ({fora}) GROUP BY dia",
             (inicio, *STATUS_FORA))}
+        em_aberto = conn.execute(
+            f"SELECT COUNT(*) AS n FROM full_pedidos WHERE status IN ({abertos_q})", ABERTOS).fetchone()["n"]
         estoque = [dict(r) for r in conn.execute("SELECT * FROM full_estoque")]
         bling = [dict(r) for r in conn.execute("SELECT sku, custo, saldo, formato FROM full_custos")]
-    custos = {b["sku"]: b["custo"] for b in bling}
+    custos = {b["sku"]: (b["custo"] or 0) * fator_ipi for b in bling}
     # Galpão = estoque do Bling (conta Ana, dona da verdade do estoque), sem os kits
     # (composições), que não têm estoque próprio. O estoque do vendedor na Shopee não
     # serve para isso: o mesmo produto aparece em vários anúncios e seria somado várias vezes.
-    saldo_bling = {b["sku"]: max(b["saldo"] or 0, 0) for b in bling if (b["formato"] or "") != "E"}
+    validos = [b for b in bling if (b["formato"] or "") != "E"]
+    saldo_bling = {b["sku"]: max(b["saldo"] or 0, 0) for b in validos}
     tot_galpao = sum(saldo_bling.values())
-    custo_galpao = sum(max(b["saldo"] or 0, 0) * (b["custo"] or 0) for b in bling if (b["formato"] or "") != "E")
-    sem_custo = sum(1 for b in bling if (b["formato"] or "") != "E" and (b["saldo"] or 0) > 0 and not b["custo"])
+    custo_galpao = sum(max(b["saldo"] or 0, 0) * (b["custo"] or 0) for b in validos) * fator_ipi
+    sem_custo = sum(1 for b in validos if (b["saldo"] or 0) > 0 and not b["custo"])
 
     linhas = {}
     for e in estoque:
         linhas[(e["item_id"], e["model_id"])] = {
-            "sku": e["sku"], "nome": e["nome"], "variacao": e["variacao"],
+            "sku": e["sku"], "nome": e["nome"], "variacao": e["variacao"], "imagem": e.get("imagem") or "",
             "full": e["full_qtd"], "locais": e["full_locais"],
             "galpao": saldo_bling.get(e["sku"]) if e["sku"] in saldo_bling else None, "dias": {},
         }
     unid_dia = {}
     for v in vendas:
         k = (v["item_id"], v["model_id"])
-        ln = linhas.setdefault(k, {"sku": v["sku"], "nome": v["nome"], "variacao": v["variacao"],
+        ln = linhas.setdefault(k, {"sku": v["sku"], "nome": v["nome"], "variacao": v["variacao"], "imagem": "",
                                    "full": None, "locais": "", "galpao": None, "dias": {}})
+        if not ln["imagem"] and v["imagem"]:
+            ln["imagem"] = v["imagem"]
         ln["dias"][v["dia"]] = ln["dias"].get(v["dia"], 0) + v["q"]
         unid_dia[v["dia"]] = unid_dia.get(v["dia"], 0) + v["q"]
 
@@ -458,42 +505,54 @@ def dados_painel(periodo=7):
         tot_full += full
         if custo:
             custo_full += full * custo
-        vend_periodo = sum(ln["dias"].get(d, 0) for d in dias_periodo)
+        vend_periodo = sum(ln["dias"].get(x, 0) for x in dias_periodo)
         # Na tela só entra o que tem a ver com o Full: estoque no Full ou venda no período.
         if not full and not vend_periodo:
             continue
         media = vend_periodo / periodo
+        atual = sum(ln["dias"].get(x, 0) for x in comp_atual)
+        ant = sum(ln["dias"].get(x, 0) for x in comp_ant)
         tabela.append({
             **ln,
-            "custo": custo,
+            "custo": custo or None,
             "custo_full": (full * custo) if custo else None,
-            "por_dia": [ln["dias"].get(d, 0) for d in dias7],
+            "por_dia": [ln["dias"].get(x, 0) for x in dias7],
             "periodo": vend_periodo,
             "media": media,
             "cobertura": (full / media) if media else None,
+            "var": _var(atual, ant),
+            "novo": bool(atual and not ant),
         })
     tabela.sort(key=lambda x: (-x["periodo"], -(x["full"] or 0)))
 
-    barras = [{"dia": d, "rot": datetime.strptime(d, "%Y-%m-%d").strftime("%d/%m"),
-               "unid": unid_dia.get(d, 0), "pedidos": pedidos_dia.get(d, 0)} for d in dias14]
+    barras = [{"dia": x, "rot": datetime.strptime(x, "%Y-%m-%d").strftime("%d/%m"),
+               "unid": unid_dia.get(x, 0), "pedidos": pedidos_dia.get(x, 0)} for x in dias14]
     maior = max([b["unid"] for b in barras] + [1])
     for b in barras:
         b["alt"] = round(100 * b["unid"] / maior)
 
+    s_atual = sum(unid_dia.get(x, 0) for x in sete_atual)
+    s_ant = sum(unid_dia.get(x, 0) for x in sete_ant)
+    p_atual = sum(unid_dia.get(x, 0) for x in comp_atual)
+    p_ant = sum(unid_dia.get(x, 0) for x in comp_ant)
     return {
         "tabela": tabela,
-        "dias7": [datetime.strptime(d, "%Y-%m-%d").strftime("%d/%m") for d in dias7],
+        "dias7": [datetime.strptime(x, "%Y-%m-%d").strftime("%d/%m") for x in dias7],
         "periodo": periodo,
         "barras": barras,
         "hoje_unid": unid_dia.get(dias7[-1], 0),
         "hoje_ped": pedidos_dia.get(dias7[-1], 0),
         "ontem_unid": unid_dia.get(dias7[-2], 0),
         "ontem_ped": pedidos_dia.get(dias7[-2], 0),
-        "sete_unid": sum(unid_dia.get(d, 0) for d in dias7),
-        "sete_ped": sum(pedidos_dia.get(d, 0) for d in dias7),
+        "sete_unid": sum(unid_dia.get(x, 0) for x in dias7),
+        "sete_ped": sum(pedidos_dia.get(x, 0) for x in dias7),
+        "sete_comp": s_atual, "sete_comp_ant": s_ant, "sete_var": _var(s_atual, s_ant),
+        "per_comp": p_atual, "per_comp_ant": p_ant, "per_var": _var(p_atual, p_ant),
+        "em_aberto": em_aberto,
         "tot_full": tot_full, "tot_galpao": tot_galpao,
         "custo_full": custo_full, "custo_galpao": custo_galpao,
         "sem_custo": sem_custo,
+        "ipi": ipi_pct(),
         "skus_full": sum(1 for x in tabela if x["full"]),
     }
 
@@ -516,7 +575,7 @@ TEMPLATE = """
 .fu-t{width:100%;border-collapse:collapse;font-size:13px}
 .fu-t th{text-align:right;font-size:11px;color:#4a5262;text-transform:uppercase;letter-spacing:.3px;padding:8px 8px;border-bottom:2px solid #e3e6ec;white-space:nowrap;position:sticky;top:0;background:#fff}
 .fu-t td{text-align:right;padding:8px 8px;border-bottom:1px solid #eef0f3;white-space:nowrap}
-.fu-t th:nth-child(-n+2),.fu-t td:nth-child(-n+2){text-align:left}
+.fu-t th:nth-child(-n+3),.fu-t td:nth-child(-n+3){text-align:left}
 .fu-t td.prod{white-space:normal;min-width:220px;max-width:340px}
 .fu-t .var{color:#5b6474;font-size:12px}
 .fu-t .dia{color:#4a5262}
@@ -527,6 +586,8 @@ TEMPLATE = """
 .fu-per{display:flex;gap:6px;align-items:center;font-size:13px}
 .fu-per a{padding:5px 12px;border-radius:999px;background:#fff;border:1px solid #d5d9e1;color:#1f2633;text-decoration:none}
 .fu-per a.on{background:#1f2633;color:#fff;border-color:#1f2633}
+.up{color:#0d6b3f;font-weight:800}.down{color:#9b1c1c;font-weight:800}
+.fu-foto{width:44px;height:44px;border-radius:8px;object-fit:cover;background:#eef0f3;display:block}
 .fu-aviso{background:#fff7d6;border-radius:10px;padding:10px 14px;font-size:13px;margin-bottom:14px}
 .fu-erro{background:#fde0e0;color:#9b1c1c;border-radius:10px;padding:10px 14px;font-size:13px;margin-bottom:14px}
 .fu-busca{font:inherit;font-size:13px;padding:7px 12px;border:1px solid #c7ccd6;border-radius:10px;min-width:220px}
@@ -546,16 +607,21 @@ TEMPLATE = """
 
   {% if rodando %}<div class="fu-aviso">Atualizando em segundo plano ({{ rodando }}). Recarregue a página em alguns minutos.</div>{% endif %}
   {% for e in erros %}<div class="fu-erro">{{ e }}</div>{% endfor %}
-  {% if not ped_at %}<div class="fu-aviso">Primeira carga: o sistema está buscando os pedidos dos últimos 30 dias. Pode levar alguns minutos.</div>{% endif %}
+  {% if not ped_at %}<div class="fu-aviso">Primeira carga: o sistema está buscando os pedidos dos últimos 60 dias. Pode levar alguns minutos.</div>{% endif %}
 
   <div class="fu-cards">
     <div class="fu-card"><div class="l">Vendas Full hoje</div><div class="n">{{ num(d.hoje_unid) }} <small style="font-size:14px">unid.</small></div><div class="s">{{ num(d.hoje_ped) }} pedidos · ontem {{ num(d.ontem_unid) }} unid. / {{ num(d.ontem_ped) }} pedidos</div></div>
-    <div class="fu-card"><div class="l">Vendas Full · últimos 7 dias</div><div class="n">{{ num(d.sete_unid) }} <small style="font-size:14px">unid.</small></div><div class="s">{{ num(d.sete_ped) }} pedidos · média {{ '%.0f'|format(d.sete_unid/7) }} unid./dia</div></div>
+    <div class="fu-card"><div class="l">Em aberto no Full</div><div class="n">{{ num(d.em_aberto) }} <small style="font-size:14px">pedidos</small></div><div class="s">pagos que o Full ainda não despachou</div></div>
+    <div class="fu-card"><div class="l">Vendas Full · últimos 7 dias</div><div class="n">{{ num(d.sete_unid) }} <small style="font-size:14px">unid.</small></div><div class="s">{{ num(d.sete_ped) }} pedidos · média {{ '%.0f'|format(d.sete_unid/7) }} unid./dia</div>
+      <div class="s">{% if d.sete_var is not none %}<span class="{{ 'up' if d.sete_var >= 0 else 'down' }}">{{ '▲' if d.sete_var >= 0 else '▼' }} {{ '%+.0f'|format(d.sete_var) }}%</span> nos 7 dias fechados ({{ num(d.sete_comp) }}) vs 7 anteriores ({{ num(d.sete_comp_ant) }}){% else %}sem base para comparar ainda{% endif %}</div></div>
     <div class="fu-card"><div class="l">Estoque no Full</div><div class="n">{{ num(d.tot_full) }} <small style="font-size:14px">unid.</small></div><div class="s">{{ d.skus_full }} SKU(s) com estoque no Full</div></div>
-    <div class="fu-card custo"><div class="l">Custo do estoque no Full</div><div class="n">{{ brl(d.custo_full) }}</div><div class="s">preço de custo do Bling × estoque no Full</div></div>
-    <div class="fu-card"><div class="l">Estoque no galpão</div><div class="n">{{ num(d.tot_galpao) }} <small style="font-size:14px">unid.</small></div><div class="s">estoque do Bling (conta Ana), sem kits</div></div>
-    <div class="fu-card custo"><div class="l">Custo do estoque no galpão</div><div class="n">{{ brl(d.custo_galpao) }}</div><div class="s">total Full + galpão: <b>{{ brl(d.custo_full + d.custo_galpao) }}</b></div></div>
+    <div class="fu-card custo"><div class="l">Custo do estoque no Full</div><div class="n">{{ brl(d.custo_full) }}</div><div class="s">custo do Bling + IPI {{ ('%.1f'|format(d.ipi)).replace('.', ',') }}% × estoque no Full</div></div>
+    <div class="fu-card custo"><div class="l">Custo do estoque no galpão</div><div class="n">{{ brl(d.custo_galpao) }}</div><div class="s">{{ num(d.tot_galpao) }} unid. no Bling (sem kits) · total Full + galpão: <b>{{ brl(d.custo_full + d.custo_galpao) }}</b></div></div>
   </div>
+  <form method="post" action="{{ url_for('full.salvar_ipi') }}" class="v2-sub" style="margin:-8px 0 14px;display:flex;gap:6px;align-items:center">
+    Custo = preço de custo do Bling + IPI de <input name="ipi" value="{{ ('%.2f'|format(d.ipi)).rstrip('0').rstrip('.').replace('.', ',') }}" style="width:52px;font:inherit;padding:2px 6px;border:1px solid #c7ccd6;border-radius:6px">%
+    <button class="v2-btn sec" type="submit" style="padding:3px 10px">Salvar</button>
+  </form>
   {% if d.sem_custo %}<div class="fu-aviso">{{ d.sem_custo }} produto(s) com estoque no Bling estão sem preço de custo e ficaram fora do valor do custo.</div>{% endif %}
 
   <div class="v2-panel" style="margin-bottom:18px">
@@ -578,19 +644,21 @@ TEMPLATE = """
     <div class="fu-tw">
     <table class="fu-t" id="fu-t">
       <thead><tr>
-        <th>SKU</th><th>Produto</th>
+        <th></th><th>SKU</th><th>Produto</th>
         {% for dd in d.dias7 %}<th class="dia">{{ dd }}</th>{% endfor %}
-        <th>Vendas {{ d.periodo }}d</th><th>Média/dia</th>
+        <th>Vendas {{ d.periodo }}d</th><th>Média/dia</th><th title="Últimos {{ d.periodo }} dias fechados contra os {{ d.periodo }} dias anteriores">Variação</th>
         <th>Full</th><th>Dura (dias)</th><th>Galpão</th><th>Custo unit.</th><th>Custo no Full</th>
       </tr></thead>
       <tbody>
       {% for r in d.tabela %}
       <tr>
+        <td>{% if r.imagem %}<img class="fu-foto" src="{{ r.imagem }}" loading="lazy" alt="">{% else %}<span class="fu-foto"></span>{% endif %}</td>
         <td class="fu-mono">{{ r.sku or '—' }}</td>
         <td class="prod">{{ r.nome }}{% if r.variacao %}<div class="var">{{ r.variacao }}</div>{% endif %}</td>
         {% for q in r.por_dia %}<td class="{{ 'zero' if not q }}">{{ q }}</td>{% endfor %}
         <td class="b">{{ num(r.periodo) }}</td>
         <td>{{ '%.1f'|format(r.media)|replace('.', ',') }}</td>
+        <td>{% if r.var is not none %}<span class="{{ 'up' if r.var >= 0 else 'down' }}">{{ '▲' if r.var >= 0 else '▼' }} {{ '%+.0f'|format(r.var) }}%</span>{% elif r.novo %}<span class="up">novo</span>{% else %}—{% endif %}</td>
         <td class="b" title="{{ r.locais }}">{{ num(r.full) if r.full is not none else '—' }}</td>
         <td class="{{ 'baixo' if r.cobertura is not none and r.cobertura < 15 }}">{{ '%.0f'|format(r.cobertura) if r.cobertura is not none else '—' }}</td>
         <td>{{ num(r.galpao) if r.galpao is not none else '—' }}</td>
@@ -598,12 +666,12 @@ TEMPLATE = """
         <td>{{ brl(r.custo_full) if r.custo_full is not none else '—' }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="16" style="text-align:center;padding:24px;color:#5b6474">Ainda sem dados do Full. Clique em "Atualizar pedidos" e "Atualizar estoque e custo".</td></tr>
+      <tr><td colspan="18" style="text-align:center;padding:24px;color:#5b6474">Ainda sem dados do Full. Clique em "Atualizar pedidos" e "Atualizar estoque e custo".</td></tr>
       {% endfor %}
       </tbody>
     </table>
     </div>
-    <div class="v2-sub" style="margin-top:8px">"Dura (dias)" = estoque no Full ÷ média de vendas por dia do período escolhido. Em vermelho quando dura menos de 15 dias. Pedidos cancelados ou não pagos não entram.</div>
+    <div class="v2-sub" style="margin-top:8px">"Dura (dias)" = estoque no Full ÷ média de vendas por dia do período escolhido. Em vermelho quando dura menos de 15 dias. "Variação" compara os últimos {{ d.periodo }} dias fechados com os {{ d.periodo }} dias anteriores (hoje não entra, porque ainda está acontecendo). Pedidos cancelados ou não pagos não entram.</div>
   </div>
 </div>
 <script>
@@ -645,6 +713,22 @@ def painel():
         ped_at=_quando(_meta("pedidos_atualizado")), est_at=_quando(_meta("estoque_atualizado")),
         rodando=" e ".join(rodando), erros=erros,
     )
+
+
+@bp.route("/full/ipi", methods=["POST"])
+def salvar_ipi():
+    bloqueio = _liberado()
+    if bloqueio:
+        return bloqueio
+    try:
+        v = float((request.form.get("ipi") or "").replace(",", ".").replace("%", "").strip())
+        if not 0 <= v <= 50:
+            raise ValueError
+        _meta("ipi_pct", v)
+        flash("IPI salvo: " + f"{v:g}".replace(".", ",") + "%. O custo do estoque já foi recalculado.")
+    except ValueError:
+        flash("Digite o IPI em %, por exemplo 6,5.")
+    return redirect(url_for("full.painel"))
 
 
 @bp.route("/full/atualizar/<o>", methods=["POST"])
