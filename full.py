@@ -30,7 +30,7 @@ LIBERADOS = {"JULIANA", "LUCAS"}
 PAUSA = 0.25                         # segundos entre consultas à Shopee
 HISTORICO_DIAS = 60                  # histórico mantido (para comparar períodos)
 ABERTOS = ("READY_TO_SHIP", "PROCESSED", "RETRY_SHIP")   # Full ainda não despachou
-IPI_PADRAO = 6.5                     # % de IPI somado ao preço de custo do Bling
+IPI_PADRAO = 0.0                     # % de IPI somado ao custo do Bling (o custo do Bling já vem com IPI)
 RECONFERIR_DIAS = 3                  # pedidos Full reconferidos (cancelamentos)
 STATUS_FORA = ("UNPAID", "CANCELLED", "IN_CANCEL")
 HORA_ESTOQUE = 5                     # atualização diária do estoque, às 5h
@@ -467,6 +467,22 @@ def dados_painel(periodo=7):
             (inicio, *STATUS_FORA))}
         em_aberto = conn.execute(
             f"SELECT COUNT(*) AS n FROM full_pedidos WHERE status IN ({abertos_q})", ABERTOS).fetchone()["n"]
+        # Pagos há mais de 24h que o Full ainda não despachou (para cobrar a Shopee).
+        limite_atraso = int(time.time()) - 24 * 3600
+        atrasados = [dict(r) for r in conn.execute(
+            f"""SELECT p.order_sn, p.create_time, p.status,
+                       GROUP_CONCAT(COALESCE(NULLIF(i.sku, ''), i.nome) || ' x' || i.qtd, ', ') AS itens
+                FROM full_pedidos p LEFT JOIN full_itens i ON i.order_sn = p.order_sn
+                WHERE p.status IN ({abertos_q}) AND p.create_time < ?
+                GROUP BY p.order_sn ORDER BY p.create_time""",
+            (*ABERTOS, limite_atraso))]
+    agora_ts = time.time()
+    for a in atrasados:
+        a["criado"] = datetime.fromtimestamp(a["create_time"], BRT).strftime("%d/%m %H:%M")
+        a["horas"] = int((agora_ts - a["create_time"]) // 3600)
+        a["status_pt"] = {"READY_TO_SHIP": "Pronto para envio", "PROCESSED": "Processado",
+                          "RETRY_SHIP": "Nova tentativa de envio"}.get(a["status"], a["status"])
+    with models.get_conn() as conn:
         estoque = [dict(r) for r in conn.execute("SELECT * FROM full_estoque")]
         bling = [dict(r) for r in conn.execute("SELECT sku, custo, saldo, formato FROM full_custos")]
     custos = {b["sku"]: (b["custo"] or 0) * fator_ipi for b in bling}
@@ -549,6 +565,7 @@ def dados_painel(periodo=7):
         "sete_comp": s_atual, "sete_comp_ant": s_ant, "sete_var": _var(s_atual, s_ant),
         "per_comp": p_atual, "per_comp_ant": p_ant, "per_var": _var(p_atual, p_ant),
         "em_aberto": em_aberto,
+        "atrasados": atrasados,
         "tot_full": tot_full, "tot_galpao": tot_galpao,
         "custo_full": custo_full, "custo_galpao": custo_galpao,
         "sem_custo": sem_custo,
@@ -576,6 +593,7 @@ TEMPLATE = """
 .fu-t th{text-align:right;font-size:11px;color:#4a5262;text-transform:uppercase;letter-spacing:.3px;padding:8px 8px;border-bottom:2px solid #e3e6ec;white-space:nowrap;position:sticky;top:0;background:#fff}
 .fu-t td{text-align:right;padding:8px 8px;border-bottom:1px solid #eef0f3;white-space:nowrap}
 .fu-t th:nth-child(-n+3),.fu-t td:nth-child(-n+3){text-align:left}
+.fu-atr th,.fu-atr td{text-align:left!important}
 .fu-t td.prod{white-space:normal;min-width:220px;max-width:340px}
 .fu-t .var{color:#5b6474;font-size:12px}
 .fu-t .dia{color:#4a5262}
@@ -611,11 +629,11 @@ TEMPLATE = """
 
   <div class="fu-cards">
     <div class="fu-card"><div class="l">Vendas Full hoje</div><div class="n">{{ num(d.hoje_unid) }} <small style="font-size:14px">unid.</small></div><div class="s">{{ num(d.hoje_ped) }} pedidos · ontem {{ num(d.ontem_unid) }} unid. / {{ num(d.ontem_ped) }} pedidos</div></div>
-    <div class="fu-card"><div class="l">Em aberto no Full</div><div class="n">{{ num(d.em_aberto) }} <small style="font-size:14px">pedidos</small></div><div class="s">pagos que o Full ainda não despachou</div></div>
+    <div class="fu-card"><div class="l">Em aberto no Full</div><div class="n">{{ num(d.em_aberto) }} <small style="font-size:14px">pedidos</small></div><div class="s">pagos que o Full ainda não despachou{% if d.atrasados %} · <a href="#atrasados" style="color:#9b1c1c;font-weight:800">{{ d.atrasados|length }} há mais de 24h</a>{% endif %}</div></div>
     <div class="fu-card"><div class="l">Vendas Full · últimos 7 dias</div><div class="n">{{ num(d.sete_unid) }} <small style="font-size:14px">unid.</small></div><div class="s">{{ num(d.sete_ped) }} pedidos · média {{ '%.0f'|format(d.sete_unid/7) }} unid./dia</div>
       <div class="s">{% if d.sete_var is not none %}<span class="{{ 'up' if d.sete_var >= 0 else 'down' }}">{{ '▲' if d.sete_var >= 0 else '▼' }} {{ '%+.0f'|format(d.sete_var) }}%</span> nos 7 dias fechados ({{ num(d.sete_comp) }}) vs 7 anteriores ({{ num(d.sete_comp_ant) }}){% else %}sem base para comparar ainda{% endif %}</div></div>
     <div class="fu-card"><div class="l">Estoque no Full</div><div class="n">{{ num(d.tot_full) }} <small style="font-size:14px">unid.</small></div><div class="s">{{ d.skus_full }} SKU(s) com estoque no Full</div></div>
-    <div class="fu-card custo"><div class="l">Custo do estoque no Full</div><div class="n">{{ brl(d.custo_full) }}</div><div class="s">custo do Bling + IPI {{ ('%.1f'|format(d.ipi)).replace('.', ',') }}% × estoque no Full</div></div>
+    <div class="fu-card custo"><div class="l">Custo do estoque no Full</div><div class="n">{{ brl(d.custo_full) }}</div><div class="s">{% if d.ipi %}custo do Bling + IPI {{ ('%.1f'|format(d.ipi)).replace('.', ',') }}%{% else %}custo do Bling (já com IPI){% endif %} × estoque no Full</div></div>
     <div class="fu-card custo"><div class="l">Custo do estoque no galpão</div><div class="n">{{ brl(d.custo_galpao) }}</div><div class="s">{{ num(d.tot_galpao) }} unid. no Bling (sem kits) · total Full + galpão: <b>{{ brl(d.custo_full + d.custo_galpao) }}</b></div></div>
   </div>
   <form method="post" action="{{ url_for('full.salvar_ipi') }}" class="v2-sub" style="margin:-8px 0 14px;display:flex;gap:6px;align-items:center">
@@ -630,6 +648,26 @@ TEMPLATE = """
       {% for b in d.barras %}<div class="fu-bar{% if loop.last %} hoje{% endif %}" title="{{ b.rot }}: {{ b.unid }} unid. em {{ b.pedidos }} pedidos"><b>{{ b.unid }}</b><i style="height:{{ b.alt }}%"></i><span>{{ b.rot }}</span></div>{% endfor %}
     </div>
   </div>
+
+  {% if d.atrasados %}
+  <div class="v2-panel" id="atrasados" style="margin-bottom:18px;border:2px solid #f0b4b4">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      <h3 style="margin:0">Pedidos Full em aberto há mais de 24h ({{ d.atrasados|length }})</h3>
+      <button type="button" class="v2-btn sec" id="fu-copiar">Copiar lista para a Shopee</button>
+    </div>
+    <div class="fu-tw"><table class="fu-t fu-atr">
+      <thead><tr><th>Pedido</th><th>Feito em</th><th>Em aberto há</th><th>Status</th><th>Itens</th></tr></thead>
+      <tbody>{% for a in d.atrasados %}<tr>
+        <td class="fu-mono">{{ a.order_sn }}</td><td>{{ a.criado }}</td>
+        <td class="{{ 'baixo' if a.horas >= 48 }}">{{ a.horas }}h</td><td>{{ a.status_pt }}</td>
+        <td style="white-space:normal;text-align:left">{{ a.itens or '' }}</td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+    <textarea id="fu-lista" style="position:absolute;left:-9999px">Pedidos Full em aberto há mais de 24h sem envio:
+{% for a in d.atrasados %}{{ a.order_sn }} (criado {{ a.criado }}, {{ a.horas }}h)
+{% endfor %}</textarea>
+  </div>
+  {% endif %}
 
   <div class="v2-panel">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
@@ -676,6 +714,12 @@ TEMPLATE = """
 </div>
 <script>
 (function(){
+  var cp=document.getElementById('fu-copiar');
+  if(cp) cp.addEventListener('click',function(){
+    var t=document.getElementById('fu-lista').value;
+    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(function(){ cp.textContent='Copiado!'; }, function(){
+      var x=document.getElementById('fu-lista'); x.select(); document.execCommand('copy'); cp.textContent='Copiado!'; });
+  });
   var b=document.getElementById('fu-busca'), rows=document.querySelectorAll('#fu-t tbody tr');
   b.addEventListener('input',function(){
     var q=b.value.toLowerCase();
