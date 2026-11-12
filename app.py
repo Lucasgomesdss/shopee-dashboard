@@ -664,6 +664,10 @@ import contestacoes
 
 contestacoes.init_app(app, get_shopee_client, devolucoes.return_sns_de)
 
+import full
+
+full.init_app(app, get_shopee_client)
+
 import agendador
 
 agendador.init_app(app, get_shopee_client, finalizar_dia, resumo_fechamento)
