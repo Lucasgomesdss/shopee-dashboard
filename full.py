@@ -89,6 +89,11 @@ def init_db():
             );
             """
         )
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(full_custos)")}
+        if "saldo" not in cols:
+            conn.execute("ALTER TABLE full_custos ADD COLUMN saldo REAL")
+        if "formato" not in cols:
+            conn.execute("ALTER TABLE full_custos ADD COLUMN formato TEXT")
 
 
 def _meta(chave, valor=None):
@@ -317,10 +322,12 @@ def atualizar_custos():
                 cod = (p.get("codigo") or "").strip()
                 if not cod:
                     continue
+                saldo = float((p.get("estoque") or {}).get("saldoVirtualTotal") or 0)
+                formato = p.get("formato") or ""
                 if "precoCusto" in p:
-                    custos[cod] = (float(p.get("precoCusto") or 0), p.get("nome") or "")
+                    custos[cod] = (float(p.get("precoCusto") or 0), p.get("nome") or "", saldo, formato)
                 else:
-                    sem_custo_na_lista.append((cod, p.get("id"), p.get("nome") or ""))
+                    sem_custo_na_lista.append((cod, p.get("id"), p.get("nome") or "", saldo, formato))
             if len(dados) < 100:
                 break
 
@@ -329,20 +336,20 @@ def atualizar_custos():
         with models.get_conn() as conn:
             com_estoque = {r["sku"] for r in conn.execute(
                 "SELECT sku FROM full_estoque WHERE full_qtd > 0 OR galpao_qtd > 0")}
-        for cod, pid, nome in sem_custo_na_lista:
+        for cod, pid, nome, saldo, formato in sem_custo_na_lista:
             if cod in custos or cod not in com_estoque or not pid:
                 continue
             d = bling_client._get(f"produtos/{pid}").get("data") or {}
             custo = d.get("precoCusto")
             if custo is None:
                 custo = (d.get("fornecedor") or {}).get("precoCusto")
-            custos[cod] = (float(custo or 0), nome)
+            custos[cod] = (float(custo or 0), nome, saldo, formato)
 
     with models.get_conn() as conn:
         conn.execute("DELETE FROM full_custos")
         conn.executemany(
-            "INSERT OR REPLACE INTO full_custos (sku, custo, nome) VALUES (?, ?, ?)",
-            [(k, v[0], v[1]) for k, v in custos.items()],
+            "INSERT OR REPLACE INTO full_custos (sku, custo, nome, saldo, formato) VALUES (?, ?, ?, ?, ?)",
+            [(k, v[0], v[1], v[2], v[3]) for k, v in custos.items()],
         )
     _meta("custo_atualizado", _agora().isoformat())
     _meta("custo_erro", "")
@@ -417,13 +424,22 @@ def dados_painel(periodo=7):
             f"SELECT dia, COUNT(*) AS n FROM full_pedidos WHERE dia >= ? AND status NOT IN ({fora}) GROUP BY dia",
             (inicio, *STATUS_FORA))}
         estoque = [dict(r) for r in conn.execute("SELECT * FROM full_estoque")]
-        custos = {r["sku"]: r["custo"] for r in conn.execute("SELECT sku, custo FROM full_custos")}
+        bling = [dict(r) for r in conn.execute("SELECT sku, custo, saldo, formato FROM full_custos")]
+    custos = {b["sku"]: b["custo"] for b in bling}
+    # Galpão = estoque do Bling (conta Ana, dona da verdade do estoque), sem os kits
+    # (composições), que não têm estoque próprio. O estoque do vendedor na Shopee não
+    # serve para isso: o mesmo produto aparece em vários anúncios e seria somado várias vezes.
+    saldo_bling = {b["sku"]: max(b["saldo"] or 0, 0) for b in bling if (b["formato"] or "") != "E"}
+    tot_galpao = sum(saldo_bling.values())
+    custo_galpao = sum(max(b["saldo"] or 0, 0) * (b["custo"] or 0) for b in bling if (b["formato"] or "") != "E")
+    sem_custo = sum(1 for b in bling if (b["formato"] or "") != "E" and (b["saldo"] or 0) > 0 and not b["custo"])
 
     linhas = {}
     for e in estoque:
         linhas[(e["item_id"], e["model_id"])] = {
             "sku": e["sku"], "nome": e["nome"], "variacao": e["variacao"],
-            "full": e["full_qtd"], "locais": e["full_locais"], "galpao": e["galpao_qtd"], "dias": {},
+            "full": e["full_qtd"], "locais": e["full_locais"],
+            "galpao": saldo_bling.get(e["sku"]) if e["sku"] in saldo_bling else None, "dias": {},
         }
     unid_dia = {}
     for v in vendas:
@@ -434,20 +450,14 @@ def dados_painel(periodo=7):
         unid_dia[v["dia"]] = unid_dia.get(v["dia"], 0) + v["q"]
 
     tabela = []
-    sem_custo = 0
-    tot_full = tot_galpao = 0
-    custo_full = custo_galpao = 0.0
+    tot_full = 0
+    custo_full = 0.0
     for ln in linhas.values():
         custo = custos.get(ln["sku"]) if ln["sku"] else None
         full = ln["full"] or 0
-        galpao = ln["galpao"] or 0
         tot_full += full
-        tot_galpao += galpao
         if custo:
             custo_full += full * custo
-            custo_galpao += galpao * custo
-        elif full or galpao:
-            sem_custo += 1
         vend_periodo = sum(ln["dias"].get(d, 0) for d in dias_periodo)
         # Na tela só entra o que tem a ver com o Full: estoque no Full ou venda no período.
         if not full and not vend_periodo:
@@ -543,10 +553,10 @@ TEMPLATE = """
     <div class="fu-card"><div class="l">Vendas Full · últimos 7 dias</div><div class="n">{{ num(d.sete_unid) }} <small style="font-size:14px">unid.</small></div><div class="s">{{ num(d.sete_ped) }} pedidos · média {{ '%.0f'|format(d.sete_unid/7) }} unid./dia</div></div>
     <div class="fu-card"><div class="l">Estoque no Full</div><div class="n">{{ num(d.tot_full) }} <small style="font-size:14px">unid.</small></div><div class="s">{{ d.skus_full }} SKU(s) com estoque no Full</div></div>
     <div class="fu-card custo"><div class="l">Custo do estoque no Full</div><div class="n">{{ brl(d.custo_full) }}</div><div class="s">preço de custo do Bling × estoque no Full</div></div>
-    <div class="fu-card"><div class="l">Estoque no galpão</div><div class="n">{{ num(d.tot_galpao) }} <small style="font-size:14px">unid.</small></div><div class="s">todos os anúncios (estoque do vendedor)</div></div>
+    <div class="fu-card"><div class="l">Estoque no galpão</div><div class="n">{{ num(d.tot_galpao) }} <small style="font-size:14px">unid.</small></div><div class="s">estoque do Bling (conta Ana), sem kits</div></div>
     <div class="fu-card custo"><div class="l">Custo do estoque no galpão</div><div class="n">{{ brl(d.custo_galpao) }}</div><div class="s">total Full + galpão: <b>{{ brl(d.custo_full + d.custo_galpao) }}</b></div></div>
   </div>
-  {% if d.sem_custo %}<div class="fu-aviso">{{ d.sem_custo }} SKU(s) com estoque estão sem preço de custo no Bling (ou com SKU diferente) e ficaram fora do valor do custo.</div>{% endif %}
+  {% if d.sem_custo %}<div class="fu-aviso">{{ d.sem_custo }} produto(s) com estoque no Bling estão sem preço de custo e ficaram fora do valor do custo.</div>{% endif %}
 
   <div class="v2-panel" style="margin-bottom:18px">
     <h3>Unidades vendidas no Full por dia · últimos 14 dias</h3>
