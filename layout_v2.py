@@ -16,6 +16,7 @@ _I = {
     "etiquetas": '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.5"/>',
     "devolucoes": '<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
     "contestacoes": '<path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/>',
+    "devshopee": '<path d="M6 8h12l-1 12H7z"/><path d="M9 8a3 3 0 0 1 6 0"/><path d="M10 14l-2-2 2-2M8 12h6a2 2 0 0 1 0 4h-1"/>',
     "full": '<path d="M3 9l9-5 9 5v11H3z"/><path d="M7 20v-6h10v6M7 17h10"/>',
     "sair": '<path d="M9 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h4M16 8l4 4-4 4M20 12H9"/>',
     "menu": '<path d="M4 7h16M4 12h16M4 17h16"/>',
@@ -84,6 +85,9 @@ BASE_TOP = (
     {% if employee_name in ('JULIANA', 'LUCAS') %}<a href="{{ url_for('devolucoes.painel') }}"{% if v2_active == 'devolucoes' %} class="on"{% endif %}>"""
     + ICONES["devolucoes"]
     + """<span class="v2-txt">Devoluções</span></a>
+    <a href="{{ url_for('devshopee.painel') }}"{% if v2_active == 'devshopee' %} class="on"{% endif %}>"""
+    + ICONES["devshopee"]
+    + """<span class="v2-txt">Devoluções Shopee</span></a>
     <a href="{{ url_for('contestacoes.painel') }}"{% if v2_active == 'contestacoes' %} class="on"{% endif %}>"""
     + ICONES["contestacoes"]
     + """<span class="v2-txt">Contestações</span></a>

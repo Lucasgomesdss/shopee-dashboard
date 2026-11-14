@@ -596,7 +596,16 @@ def painel():
         bling_configurado=bling_client.configurado(),
         bling_conectado=bling_client.conectado(),
         eh_lucas=session.get("employee_name") == "LUCAS",
+        alertas_shopee=_alertas_shopee(),
     )
+
+
+def _alertas_shopee():
+    try:
+        import devolucoes_shopee
+        return devolucoes_shopee.resumo_alertas()
+    except Exception:
+        return None
 
 
 @bp.route("/devolucoes/fila")
@@ -836,6 +845,13 @@ TEMPLATE = """
     </div>
   </div>
 
+  {% if alertas_shopee and (alertas_shopee.sem_bipar or alertas_shopee.responder) %}
+  <div class="dv-aviso" style="border-left-color:#d93025">
+    {% if alertas_shopee.sem_bipar %}<b>{{ alertas_shopee.sem_bipar }}</b> devolução(ões) a transportadora marcou como entregue há mais de 2 dias e ninguém bipou. {% endif %}
+    {% if alertas_shopee.responder %}<b>{{ alertas_shopee.responder }}</b> para responder na Shopee. {% endif %}
+    <a class="v2-btn sec" style="margin-left:6px" href="{{ url_for('devshopee.painel') }}">Ver Devoluções Shopee</a>
+  </div>
+  {% endif %}
   {% if not bling_configurado %}
   <div class="dv-aviso">Faltam as variáveis <b>BLING_CLIENT_ID</b> e <b>BLING_CLIENT_SECRET</b> no Render.</div>
   {% elif not bling_conectado %}
