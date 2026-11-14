@@ -653,9 +653,15 @@ def _montar(r, bips, agora):
                 prazos.append(int(ts))
         if of and of.get("prazo"):
             prazos.append(int(of["prazo"]))
-    prazo = min([p for p in prazos if p > 0], default=None)
+    futuros = [p for p in prazos if p > agora]
+    prazo = min(futuros) if futuros else (max(prazos) if prazos else None)
     r["prazo_ts"] = prazo
-    r["prazo_txt"] = (_data(prazo) + " (falta " + _falta(prazo, agora) + ")") if prazo else ""
+    if not prazo:
+        r["prazo_txt"] = ""
+    elif prazo > agora:
+        r["prazo_txt"] = _data(prazo) + " (falta " + _falta(prazo, agora) + ")"
+    else:
+        r["prazo_txt"] = "venceu em " + _data(prazo) + " — confira na Shopee se ainda dá para responder"
     r["prazo_perto"] = bool(prazo and prazo - agora < 24 * 3600)
     r["criado_txt"] = _data(r["criado"])
     r["entregue_txt"] = _data(r["entregue_em"]) if r["entregue_em"] else ""

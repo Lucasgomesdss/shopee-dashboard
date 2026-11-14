@@ -5,6 +5,15 @@
 {% if not orders %}
 <p class="muted">Nenhum pedido esperando separação no momento 🎉</p>
 {% endif %}
+{% set rp = ultima_reimpressao() %}
+{% if rp %}
+<div class="card" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-left:4px solid {{ '#f5c518' if rp.status == 'rodando' else ('#1e9e5a' if rp.status == 'concluido' else '#d93025') }}">
+<b>Última reimpressão ({{ rp.quando }})</b>
+{% if rp.status == 'rodando' %}<span class="muted">{{ rp.etapa }}</span><a class="btn btn-sm" href="{{ url_for('reimpressao.acompanhar', tid=rp.id) }}">Acompanhar</a>
+{% elif rp.status == 'concluido' %}<span class="muted">{{ rp.qtd }} etiqueta(s){% if rp.falhas_l %} · {{ rp.falhas_l|length }} sem etiqueta{% endif %}</span><a class="btn btn-sm" href="{{ url_for('reimpressao.arquivo', tid=rp.id) }}">Baixar de novo</a><a class="btn btn-sm" href="{{ url_for('reimpressao.acompanhar', tid=rp.id) }}">Detalhes</a>
+{% else %}<span class="muted">não terminou: {{ rp.etapa }}</span>{% endif %}
+</div>
+{% endif %}
 <form method="post" action="{{ url_for('reimpressao.reimprimir') }}" id="rp-form">
 {% if orders %}
 <div class="card" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
@@ -55,8 +64,7 @@
     if(s && s.id!=="rp-go") return;
     var c=0; chks.forEach(function(x){ if(x.checked) c++; });
     if(!c){ e.preventDefault(); sel.textContent="Marque pelo menos um pedido."; return; }
-    go.disabled=true; go.textContent="Buscando etiquetas na Shopee...";
-    setTimeout(function(){ go.disabled=false; go.textContent="Baixar etiquetas selecionadas"; },60000);
+    go.disabled=true; go.textContent="Enviando pedido...";
   });
 })();
 </script>

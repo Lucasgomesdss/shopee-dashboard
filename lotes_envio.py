@@ -179,14 +179,14 @@ def _esperar_rastreios(client, sns, tid):
 
 def _gerar_arquivo(client, tid, lote, sns, falhas, rastreios=None):
     """Baixa o ZPL dos pedidos (na ordem dada) e guarda um .txt para este lote."""
-    textos = []
-    for i in range(0, len(sns), reimpressao.LOTE):
-        _upd(tid, etapa=f"Baixando etiquetas de {lote} ({i}/{len(sns)})")
-        t = reimpressao._lote(client, sns[i:i + reimpressao.LOTE], falhas, rastreios_frescos=rastreios)
-        if t:
-            textos.append(t)
-    if not textos:
+    _upd(tid, etapa=f"Baixando etiquetas de {lote} (0/{len(sns)})")
+    texto = reimpressao.baixar_varios(
+        client, sns, falhas, rastreios_frescos=rastreios,
+        aviso=lambda feitos, total: _upd(tid, etapa=f"Baixando etiquetas de {lote} ({feitos}/{total})"),
+    )
+    if not texto:
         return 0
+    textos = [texto]
     qtd = len(sns) - sum(1 for sn, _ in falhas if sn in set(sns))
     limpo = re.sub(r"[^A-Za-z0-9 ._-]", "", unicodedata.normalize("NFKD", lote).encode("ascii", "ignore").decode())
     nome = "ETIQUETAS %s %d %s.txt" % (re.sub(r"\s+", " ", limpo).strip(), qtd, datetime.now(BRT).strftime("%d-%m %H%M"))
