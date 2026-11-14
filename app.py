@@ -664,6 +664,10 @@ import contestacoes
 
 contestacoes.init_app(app, get_shopee_client, devolucoes.return_sns_de)
 
+import devolucoes_shopee
+
+devolucoes_shopee.init_app(app, get_shopee_client)
+
 import full
 
 full.init_app(app, get_shopee_client)
