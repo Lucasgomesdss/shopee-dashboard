@@ -9,6 +9,12 @@
     <div class="card" style="border-left:4px solid var(--ok);">
       ✅ Loja <strong>{{ shopee_shop_id }}</strong> conectada à Shopee.
     </div>
+  {% elif g.get('loja') == 'utility' %}
+    <div class="card" style="border-left:4px solid #0b5c86;">
+      <h3>Conectar a Utility na Shopee</h3>
+      <p class="muted">A Utility ainda não está autorizada. Clique abaixo, entre na Shopee com o <b>login da Utility</b> (não o da Ana Baby) e clique em Autorizar. Você volta para cá sozinho.</p>
+      {% if employee_name == 'LUCAS' %}<a class="btn btn-primary" href="{{ url_for('utility.conectar') }}">Conectar a Utility</a>{% else %}<p class="muted">Peça ao LUCAS para conectar.</p>{% endif %}
+    </div>
   {% else %}
     <div class="flash">
       Credenciais configuradas, mas nenhuma loja autorizada ainda. Vá no Console da
