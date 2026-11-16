@@ -414,7 +414,13 @@ def reimprimir():
                 "VALUES ('rodando', ?, ?, 'Começando', ?, ?, ?)",
                 (json.dumps(sns), len(sns), session.get("employee_name") or "", _agora(), _agora()),
             ).lastrowid
-    threading.Thread(target=_rodar, args=(tid, sns), daemon=True).start()
+    db = models.caminho_db()   # Ana Baby ou Utility: o trabalho roda no banco da loja da tela
+
+    def _rodar_na_loja():
+        with models.usar_db(db):
+            _rodar(tid, sns)
+
+    threading.Thread(target=_rodar_na_loja, daemon=True).start()
     return redirect(url_for("reimpressao.acompanhar", tid=tid))
 
 

@@ -13,6 +13,7 @@ import sqlite3
 import json
 import os
 import time
+import contextvars
 from datetime import datetime
 from contextlib import contextmanager
 
@@ -24,9 +25,29 @@ STATUS_COMPLETED = "completed"       # separado e conferido com OK do colaborado
 STATUS_ARCHIVED = "archived"         # concluído E já coletado pela transportadora — some da lista/contagem mas fica salvo
 
 
+# Banco "da vez". Por padrão é o da Ana Baby (DB_PATH). As telas da Utility trocam
+# para o banco dela (utility.db) só durante o pedido delas -- assim as mesmas funções
+# de separação servem para as duas lojas, cada uma com a sua fila, sem misturar.
+_db_atual = contextvars.ContextVar("db_atual", default=None)
+
+
+def caminho_db():
+    return _db_atual.get() or DB_PATH
+
+
+@contextmanager
+def usar_db(caminho):
+    """Faz tudo dentro do bloco usar o banco indicado (ex.: o da Utility)."""
+    tok = _db_atual.set(caminho)
+    try:
+        yield
+    finally:
+        _db_atual.reset(tok)
+
+
 @contextmanager
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(caminho_db())
     conn.row_factory = sqlite3.Row
     try:
         yield conn
