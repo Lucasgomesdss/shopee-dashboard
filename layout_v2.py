@@ -51,6 +51,10 @@ BASE_TOP = (
 """
     + CSS_LINK
     + """
+<script>
+// Foto que não abriu no endereço novo da Shopee: tenta uma vez no endereço antigo.
+document.addEventListener('error',function(e){var i=e.target;if(i&&i.tagName==='IMG'&&!i.dataset.fb&&i.src.indexOf('down-br.img.susercontent.com/file/')>-1){i.dataset.fb='1';i.src=i.src.replace('https://down-br.img.susercontent.com/file/','https://cf.shopee'+'.com.br/file/');}},true);
+</script>
 </head>
 <body class="v2">
 <div class="v2-top"><button type="button" id="v2-burger" aria-label="Menu">"""
