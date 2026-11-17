@@ -31,14 +31,17 @@ def _download_image_bytes(url):
         return None
     if url in _image_bytes_cache:
         return _image_bytes_cache[url]
-    try:
-        resp = _image_session.get(url, timeout=5)
-        resp.raise_for_status()
-        _image_bytes_cache[url] = resp.content
-        return resp.content
-    except Exception:
-        _image_bytes_cache[url] = None
-        return None
+    import fotos
+    for tentativa in dict.fromkeys([fotos.url(url), url]):
+        try:
+            resp = _image_session.get(tentativa, timeout=5)
+            resp.raise_for_status()
+            _image_bytes_cache[url] = resp.content
+            return resp.content
+        except Exception:
+            continue
+    _image_bytes_cache[url] = None
+    return None
 
 
 def _bytes_to_image(content, size=IMG_SIZE):

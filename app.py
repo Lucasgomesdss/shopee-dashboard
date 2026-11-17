@@ -16,6 +16,9 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "troque-esta-chave-em-producao")
 app.jinja_env.filters["fromjson"] = json.loads
 
+import fotos
+fotos.init_app(app)
+
 
 # ---------------------------------------------------------------------------
 # Proteção contra robôs que varrem a internet atrás de falhas (wp-admin,
