@@ -676,6 +676,10 @@ import agendador
 
 agendador.init_app(app, get_shopee_client, finalizar_dia, resumo_fechamento)
 
+import utility
+
+utility.init_app(app, globals(), get_shopee_client, finalizar_dia, (PARTNER_ID, PARTNER_KEY))
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)

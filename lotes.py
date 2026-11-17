@@ -359,12 +359,12 @@ TEMPLATE = """
 <p>Ainda sem dados. Clique em "Atualizar agora".</p>
 {% endif %}
 {% if envio.arquivos %}
-<div class="v2-sec"><h2>Arquivos gerados</h2></div>
+<div class="v2-sec"><h2>Arquivos gerados</h2><span class="v2-sub">últimos 30 dias · {{ envio.arquivos|length }} arquivo(s) · inclui as reimpressões da tela A separar</span></div>
 <div class="v2-list">
   {% for a in envio.arquivos %}
-  <div class="v2-lote" style="cursor:default"><span class="v2-lt"><b>{{ a.lote }}</b><small>{{ a.quando }} · {{ a.nome }}</small></span>
+  <div class="v2-lote" style="cursor:default"><span class="v2-lt"><b>{{ a.lote }}</b><small>{{ a.quando }}{% if a.quem %} · por {{ a.quem }}{% endif %} · {{ a.nome }}{% if a.falhas %} · {{ a.falhas }} sem etiqueta{% endif %}</small></span>
     <span class="v2-cnt">{{ a.qtd }}</span>
-    <a class="v2-btn sec" href="{{ url_for('lotes_envio.baixar', aid=a.id) }}">{{ ic.baixar|safe }}Baixar .txt</a></div>
+    <a class="v2-btn sec" href="{{ a.url }}">{{ ic.baixar|safe }}Baixar .txt</a></div>
   {% endfor %}
 </div>
 {% endif %}

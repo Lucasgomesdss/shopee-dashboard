@@ -18,6 +18,7 @@ _I = {
     "contestacoes": '<path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/>',
     "devshopee": '<path d="M6 8h12l-1 12H7z"/><path d="M9 8a3 3 0 0 1 6 0"/><path d="M10 14l-2-2 2-2M8 12h6a2 2 0 0 1 0 4h-1"/>',
     "full": '<path d="M3 9l9-5 9 5v11H3z"/><path d="M7 20v-6h10v6M7 17h10"/>',
+    "utility": '<path d="M4 7h16l-1.5 12h-13z"/><path d="M9 7V5a3 3 0 0 1 6 0v2"/>',
     "sair": '<path d="M9 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h4M16 8l4 4-4 4M20 12H9"/>',
     "menu": '<path d="M4 7h16M4 12h16M4 17h16"/>',
     "recolher": '<path d="M15 6l-6 6 6 6"/>',
@@ -94,6 +95,9 @@ BASE_TOP = (
     <a href="{{ url_for('full.painel') }}"{% if v2_active == 'full' %} class="on"{% endif %}>"""
     + ICONES["full"]
     + """<span class="v2-txt">Full</span></a>{% endif %}
+    <a href="{{ url_for('utility.dashboard') }}">"""
+    + ICONES["utility"]
+    + """<span class="v2-txt">Utility</span></a>
   </nav>
   <div class="v2-foot">
     {% if employee_name %}<div class="v2-user"><span class="v2-av">{{ employee_name[:1] }}</span><span class="v2-txt">{{ employee_name }}</span></div>{% endif %}
