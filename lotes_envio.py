@@ -293,15 +293,38 @@ def _refazer_arquivo(tid):
 
 # ------------------------------------------------------------------ dados para a tela
 
+DIAS_HISTORICO = 30   # arquivos de etiquetas ficam na lista por 30 dias
+
+
 def resumo_tela():
     """Trabalho atual/último e arquivos recentes, para a tela Etiquetas."""
     ativo = _trabalho_ativo()
     with models.get_conn() as conn:
         ultimo = conn.execute("SELECT * FROM etiquetas_trabalhos ORDER BY id DESC LIMIT 1").fetchone()
+        limite = (datetime.utcnow() - timedelta(days=DIAS_HISTORICO)).isoformat()
         arquivos = [dict(r) for r in conn.execute(
-            "SELECT id, trabalho_id, lote, nome, qtd, criado_em FROM etiquetas_arquivos "
-            "ORDER BY id DESC LIMIT 15"
+            "SELECT a.id, a.trabalho_id, a.lote, a.nome, a.qtd, a.criado_em, t.iniciado_por AS quem "
+            "FROM etiquetas_arquivos a LEFT JOIN etiquetas_trabalhos t ON t.id = a.trabalho_id "
+            "WHERE a.criado_em >= ? ORDER BY a.id DESC LIMIT 200", (limite,),
         ).fetchall()]
+        for a in arquivos:
+            a["url"] = url_for("lotes_envio.baixar", aid=a["id"])
+            a["falhas"] = 0
+        # Reimpressões feitas na tela A separar também entram na lista, para conferência.
+        try:
+            for r in conn.execute(
+                "SELECT id, qtd, nome, criado_em, iniciado_por, falhas FROM reimpressao_trabalhos "
+                "WHERE status = 'concluido' AND criado_em >= ? ORDER BY id DESC LIMIT 200", (limite,),
+            ).fetchall():
+                arquivos.append({
+                    "id": r["id"], "lote": "REIMPRESSÃO (A separar)", "nome": r["nome"], "qtd": r["qtd"],
+                    "criado_em": r["criado_em"], "quem": r["iniciado_por"],
+                    "falhas": len(json.loads(r["falhas"] or "[]")),
+                    "url": url_for("reimpressao.arquivo", tid=r["id"]),
+                })
+        except Exception:
+            pass
+    arquivos.sort(key=lambda a: a["criado_em"] or "", reverse=True)
     t = dict(ultimo) if ultimo else None
     if t:
         t["n_org"] = len(json.loads(t["organizados"] or "[]"))
