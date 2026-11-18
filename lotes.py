@@ -266,6 +266,13 @@ def _loop():
 
 _rodando = [False]
 
+LABEL_TODOS = "TODOS OS LOTES"
+
+
+def atualizando():
+    """True enquanto a lista de lotes está sendo recalculada (botão ou automático)."""
+    return _rodando[0] or _lock.locked()
+
 
 def _bg():
     try:
@@ -284,9 +291,21 @@ TEMPLATE = """
     <h1>Etiquetas{% if not envio.pode %}<span class="v2-badge">Modo visualização</span>{% endif %}</h1>
     <div class="v2-sub">{% if s.atualizado_em %}Atualizado em {{ s.atualizado_em }} · {% endif %}atualiza sozinho de segunda a sábado às 6:50 · ou clique em Atualizar agora</div>
   </div>
-  <form method="post" action="{{ url_for('lotes.atualizar_agora') }}"><button type="submit" class="v2-btn">{{ ic.recarregar|safe }}Atualizar agora</button></form>
+  <form method="post" action="{{ url_for('lotes.atualizar_agora') }}" id="lt-atu"><button type="submit" class="v2-btn" {% if rodando %}disabled{% endif %}>{{ ic.recarregar|safe }}Atualizar agora</button></form>
 </div>
-{% if rodando %}<div class="v2-flash">Atualizando as etiquetas... esta página recarrega sozinha.</div><script>setTimeout(function(){location.reload()},5000)</script>{% endif %}
+<style>
+.lt-load{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:70px 20px;background:#fff;border-radius:14px;margin:14px 0;text-align:center}
+.lt-load b{font-size:18px}.lt-load span{color:#5b6474;font-size:14px}
+.lt-spin{width:46px;height:46px;border:5px solid #f3e3a1;border-top-color:#f5c518;border-radius:50%;animation:ltgira 0.9s linear infinite}
+@keyframes ltgira{to{transform:rotate(360deg)}}
+</style>
+<div class="lt-load" id="lt-load" {% if not rodando %}style="display:none"{% endif %}>
+  <div class="lt-spin"></div>
+  <b>Atualizando as etiquetas…</b>
+  <span>Buscando os pedidos na Shopee. Aguarde — a página volta sozinha com os números novos.</span>
+</div>
+{% if rodando %}<script>setTimeout(function(){location.reload()},3000)</script>{% endif %}
+<script>document.getElementById("lt-atu").addEventListener("submit",function(){var b=this.querySelector("button");b.disabled=true;document.getElementById("lt-load").style.display="";var c=document.getElementById("lt-conteudo");if(c)c.style.display="none";});</script>
 {% if s.erro %}<div class="v2-flash">Não consegui atualizar agora: {{ s.erro }}</div>{% endif %}
 {% set t = envio.trabalho %}
 {% if t %}
@@ -299,7 +318,8 @@ TEMPLATE = """
 </div>
 {% if envio.ativo %}<script>setTimeout(function(){location.reload()},5000)</script>{% endif %}
 {% endif %}
-{% if 'lotes' in s %}
+<div id="lt-conteudo" {% if rodando %}style="display:none"{% endif %}>
+{% if rodando %}{% elif 'lotes' in s %}
 <div class="v2-cards">
   <div class="v2-card y"><span class="ci">{{ ic.pendente|safe }}</span><div><div class="l">Total do dia</div><div class="n">{{ s.total }}</div></div></div>
   <div class="v2-card o"><span class="ci">{{ ic.relogio|safe }}</span><div><div class="l">Em aberto</div><div class="n">{{ s.em_aberto }}</div></div></div>
@@ -320,6 +340,13 @@ TEMPLATE = """
     <span class="v2-cnt">{{ l.count }}</span>
   </label>
   {% endfor %}
+  {% if s.lotes|length > 1 %}
+  <label class="v2-lote" style="border:2px dashed #f5c518">
+    <input type="radio" class="lt-chk" name="lote" value="{{ todos }}" form="lt-form" data-n="{{ s.soma_lotes or s.lotes|sum(attribute='count') }}" data-nome="{{ todos }}">
+    <span class="v2-lt"><b>IMPRIMIR TODOS</b><small>todos os lotes acima num arquivo só, na mesma ordem</small></span>
+    <span class="v2-cnt">{{ s.soma_lotes or s.lotes|sum(attribute='count') }}</span>
+  </label>
+  {% endif %}
 </div>
 <form id="lt-form" method="post" action="{{ url_for('lotes_envio.organizar') }}"></form>
 <div class="v2-bar">
@@ -358,6 +385,7 @@ TEMPLATE = """
 {% else %}
 <p>Ainda sem dados. Clique em "Atualizar agora".</p>
 {% endif %}
+</div>
 {% if envio.arquivos %}
 <div class="v2-sec"><h2>Arquivos gerados</h2><span class="v2-sub">últimos 30 dias · {{ envio.arquivos|length }} arquivo(s) · inclui as reimpressões da tela A separar</span></div>
 <div class="v2-list">
@@ -375,7 +403,7 @@ TEMPLATE = """
 @bp.route("/lotes")
 def painel():
     import lotes_envio
-    return render_page("Etiquetas", "etiquetas", TEMPLATE, s=_ler(), ic=ICONES, rodando=_rodando[0],
+    return render_page("Etiquetas", "etiquetas", TEMPLATE, s=_ler(), ic=ICONES, rodando=atualizando(), todos=LABEL_TODOS,
                        envio=lotes_envio.resumo_tela())
 
 
