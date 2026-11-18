@@ -211,6 +211,10 @@ def _rodar(tid, rotulos, limite):
             pedidos = snap.get("pedidos") or {}
             plano = []                             # [(lote, [sns])] na ordem dos lotes marcados
             restante = limite or 10 ** 9
+            if rotulos == [lotes.LABEL_TODOS]:
+                # Imprimir todos: um arquivo só, com os lotes na mesma ordem da tela.
+                juntos = [sn for l in snap.get("lotes") or [] for sn in (pedidos.get(l["label"]) or [])]
+                pedidos = {lotes.LABEL_TODOS: list(dict.fromkeys(juntos))}
             for rot in rotulos:
                 sns = (pedidos.get(rot) or [])[:restante]
                 restante -= len(sns)
@@ -353,6 +357,9 @@ def organizar():
         limite = int(request.form.get("limite") or 0) or None
     except ValueError:
         limite = None
+    if lotes.atualizando():
+        flash("A lista de etiquetas está atualizando. Espere terminar e escolha o lote de novo.")
+        return redirect(url_for("lotes.painel"))
     if _trabalho_ativo() or _lock.locked():
         flash("Já tem um lote sendo organizado. Espere terminar.")
         return redirect(url_for("lotes.painel"))
