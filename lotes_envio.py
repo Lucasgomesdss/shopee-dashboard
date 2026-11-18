@@ -74,6 +74,7 @@ def init_db():
             )
             """
         )
+        reimpressao.marcar_baixado_colunas(conn, "etiquetas_arquivos")
 
 
 def _agora():
@@ -289,9 +290,10 @@ def _rodar(tid, rotulos, limite, snap_tela=None):
             _upd(tid, status="concluido", etapa="Pronto", organizados=organizados, falhas=falhas, fim_em=_agora())
         except Exception as e:
             _upd(tid, status="erro", etapa=f"Parou: {e}", organizados=organizados, falhas=falhas, fim_em=_agora())
-    # Atualiza os números da tela depois de organizar (fora da trava).
+    # Tira da tela os pedidos que acabaram de ser organizados (sem buscar tudo de novo na
+    # Shopee — a lista completa só atualiza às 6:50 ou no botão Atualizar agora).
     try:
-        lotes.atualizar()
+        lotes.remover_pedidos(organizados)
     except Exception:
         pass
 
@@ -332,7 +334,7 @@ def resumo_tela():
         ultimo = conn.execute("SELECT * FROM etiquetas_trabalhos ORDER BY id DESC LIMIT 1").fetchone()
         limite = (datetime.utcnow() - timedelta(days=DIAS_HISTORICO)).isoformat()
         arquivos = [dict(r) for r in conn.execute(
-            "SELECT a.id, a.trabalho_id, a.lote, a.nome, a.qtd, a.criado_em, t.iniciado_por AS quem "
+            "SELECT a.id, a.trabalho_id, a.lote, a.nome, a.qtd, a.criado_em, a.baixado_em, a.baixado_por, t.iniciado_por AS quem "
             "FROM etiquetas_arquivos a LEFT JOIN etiquetas_trabalhos t ON t.id = a.trabalho_id "
             "WHERE a.criado_em >= ? ORDER BY a.id DESC LIMIT 200", (limite,),
         ).fetchall()]
@@ -342,13 +344,14 @@ def resumo_tela():
         # Reimpressões feitas na tela A separar também entram na lista, para conferência.
         try:
             for r in conn.execute(
-                "SELECT id, qtd, nome, criado_em, iniciado_por, falhas FROM reimpressao_trabalhos "
+                "SELECT id, qtd, nome, criado_em, iniciado_por, falhas, baixado_em, baixado_por FROM reimpressao_trabalhos "
                 "WHERE status = 'concluido' AND criado_em >= ? ORDER BY id DESC LIMIT 200", (limite,),
             ).fetchall():
                 arquivos.append({
                     "id": r["id"], "lote": "REIMPRESSÃO (A separar)", "nome": r["nome"], "qtd": r["qtd"],
                     "criado_em": r["criado_em"], "quem": r["iniciado_por"],
                     "falhas": len(json.loads(r["falhas"] or "[]")),
+                    "baixado_em": r["baixado_em"], "baixado_por": r["baixado_por"],
                     "url": url_for("reimpressao.arquivo", tid=r["id"]),
                 })
         except Exception:
@@ -372,6 +375,10 @@ def resumo_tela():
             a["quando"] = datetime.fromisoformat(a["criado_em"]).replace(tzinfo=timezone.utc).astimezone(BRT).strftime("%d/%m %H:%M")
         except (TypeError, ValueError):
             a["quando"] = ""
+        try:
+            a["baixado_quando"] = datetime.fromisoformat(a["baixado_em"]).replace(tzinfo=timezone.utc).astimezone(BRT).strftime("%d/%m %H:%M")
+        except (TypeError, ValueError):
+            a["baixado_quando"] = ""
     return {"ativo": bool(ativo), "trabalho": t, "arquivos": arquivos,
             "pode": bool(session.get("employee_name"))}
 
@@ -429,6 +436,7 @@ def baixar(aid):
     if not row:
         flash("Arquivo não encontrado.")
         return redirect(url_for("lotes.painel"))
+    reimpressao.marcar_baixado("etiquetas_arquivos", aid)
     return Response(
         row["conteudo"],
         mimetype="text/plain; charset=utf-8",
