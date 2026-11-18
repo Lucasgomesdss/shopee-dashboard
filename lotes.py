@@ -299,16 +299,23 @@ TEMPLATE = """
 .lt-spin{width:46px;height:46px;border:5px solid #f3e3a1;border-top-color:#f5c518;border-radius:50%;animation:ltgira 0.9s linear infinite}
 @keyframes ltgira{to{transform:rotate(360deg)}}
 </style>
-<div class="lt-load" id="lt-load" {% if not rodando %}style="display:none"{% endif %}>
+{% set gerando = envio.ativo %}
+<div class="lt-load" id="lt-load" {% if not (rodando or gerando) %}style="display:none"{% endif %}>
   <div class="lt-spin"></div>
-  <b>Atualizando as etiquetas…</b>
-  <span>Buscando os pedidos na Shopee. Aguarde — a página volta sozinha com os números novos.</span>
+  {% if gerando %}
+  <b>Organizando o envio e gerando o arquivo…</b>
+  <span>{{ envio.trabalho.etapa if envio.trabalho else '' }}</span>
+  <span>Não feche esta tela. O arquivo aparece embaixo, em Arquivos gerados, quando ficar pronto.</span>
+  {% else %}
+  <b id="lt-load-t">Atualizando as etiquetas…</b>
+  <span id="lt-load-s">Buscando os pedidos na Shopee. Aguarde — a página volta sozinha com os números novos.</span>
+  {% endif %}
 </div>
-{% if rodando %}<script>setTimeout(function(){location.reload()},3000)</script>{% endif %}
+{% if rodando or gerando %}<script>setTimeout(function(){location.reload()},3000)</script>{% endif %}
 <script>document.getElementById("lt-atu").addEventListener("submit",function(){var b=this.querySelector("button");b.disabled=true;document.getElementById("lt-load").style.display="";var c=document.getElementById("lt-conteudo");if(c)c.style.display="none";});</script>
 {% if s.erro %}<div class="v2-flash">Não consegui atualizar agora: {{ s.erro }}</div>{% endif %}
 {% set t = envio.trabalho %}
-{% if t %}
+{% if t and not gerando %}
 <div class="v2-flash" style="{% if t.status == 'erro' %}border-color:#e05252{% endif %}">
   <b>{% if t.status == 'rodando' %}Organizando envio…{% elif t.status == 'concluido' %}Último envio organizado{% else %}O último envio parou{% endif %}</b>
   {% if t.quando %}({{ t.quando }}){% endif %} — {{ t.etapa }} · {{ t.n_org }} de {{ t.total }} pedido(s) organizados{% if t.iniciado_por %} · por {{ t.iniciado_por }}{% endif %}
@@ -316,10 +323,9 @@ TEMPLATE = """
     <ul style="margin:6px 0 0 18px">{% for f in t.falhas_l[:60] %}<li><span style="font-family:monospace">{{ f[0] }}</span> — {{ f[1] }}</li>{% endfor %}</ul></details>{% endif %}
   {% if t.status == 'erro' and t.n_org and envio.pode %}<form method="post" action="{{ url_for('lotes_envio.refazer', tid=t.id) }}" style="margin-top:8px"><button class="v2-btn sec" type="submit">Gerar arquivo dos já organizados</button></form>{% endif %}
 </div>
-{% if envio.ativo %}<script>setTimeout(function(){location.reload()},5000)</script>{% endif %}
 {% endif %}
-<div id="lt-conteudo" {% if rodando %}style="display:none"{% endif %}>
-{% if rodando %}{% elif 'lotes' in s %}
+<div id="lt-conteudo" {% if rodando or gerando %}style="display:none"{% endif %}>
+{% if rodando or gerando %}{% elif 'lotes' in s %}
 <div class="v2-cards">
   <div class="v2-card y"><span class="ci">{{ ic.pendente|safe }}</span><div><div class="l">Total do dia</div><div class="n">{{ s.total }}</div></div></div>
   <div class="v2-card o"><span class="ci">{{ ic.relogio|safe }}</span><div><div class="l">Em aberto</div><div class="n">{{ s.em_aberto }}</div></div></div>
@@ -377,7 +383,11 @@ TEMPLATE = """
     {% if not envio.pode %}msg.textContent="Entre com o seu nome para organizar o envio.";return;{% endif %}
     var lim=document.querySelector("input[name=limite]"); var n=(lim&&lim.value)?Math.min(parseInt(lim.value,10),e):e;
     if(confirm("Organizar o envio de "+n+" pedido(s) na Shopee e gerar o arquivo da Zebra?\\n\\nIsso muda o status na Shopee para 'A enviar/processado' e NÃO tem volta.")){
-      document.getElementById("lt-go").disabled=true; document.getElementById("lt-form").submit();
+      document.getElementById("lt-go").disabled=true;
+      var L=document.getElementById("lt-load"),T=document.getElementById("lt-load-t"),S=document.getElementById("lt-load-s");
+      if(T)T.textContent="Organizando o envio e gerando o arquivo…"; if(S)S.textContent="Começando. Não feche esta tela.";
+      L.style.display=""; document.getElementById("lt-conteudo").style.display="none"; window.scrollTo(0,0);
+      document.getElementById("lt-form").submit();
     }
   });
 })();

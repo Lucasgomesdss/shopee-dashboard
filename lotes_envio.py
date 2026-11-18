@@ -1,7 +1,8 @@
 """Etiquetas — etapa 2: organizar o envio de lotes na Shopee e gerar o .txt ZPL (Zebra).
 
 Fluxo de um trabalho (roda em segundo plano, um por vez):
-  1. Recalcula os lotes na hora (lista fresca da Shopee) e pega os pedidos dos lotes marcados.
+  1. Pega os pedidos do lote exatamente como estavam na tela no momento do clique
+     (pedidos que entraram depois ficam para a próxima atualização).
   2. Confere de novo que cada pedido ainda está "A enviar" (READY_TO_SHIP) — nunca organiza duas vezes.
   3. Organiza o envio (ship_order) com coleta Shopee Xpress: endereço de coleta da loja e o
      primeiro horário que a própria Shopee oferece.
@@ -18,6 +19,7 @@ import re
 import threading
 import unicodedata
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, Response, flash, redirect, request, session, url_for
@@ -29,7 +31,8 @@ import reimpressao
 bp = Blueprint("lotes_envio", __name__)
 
 BRT = timezone(timedelta(hours=-3))
-PAUSA = 0.4                 # entre chamadas de organizar envio
+PAUSA = 0.2                 # entre chamadas de organizar envio (em cada fila)
+FILAS = 4                   # pedidos organizados ao mesmo tempo
 ESPERA_RASTREIO = 120       # segundos esperando a Shopee gerar o rastreio
 BATIMENTO_MORTO = 180       # trabalho sem sinal de vida há mais que isso = processo caiu
 _get_client = [None]
@@ -158,18 +161,22 @@ def _esperar_rastreios(client, sns, tid):
     rastreios = {}
     ini = time.time()
     while faltam and time.time() - ini < ESPERA_RASTREIO:
-        novos = []
-        for sn in faltam:
+        def um(sn):
             try:
                 r = client._shop_request("GET", "/api/v2/logistics/get_tracking_number", params={"order_sn": sn})
-                tn = ((r.get("response") or {}).get("tracking_number") or "").strip()
+                return ((r.get("response") or {}).get("tracking_number") or "").strip()
             except Exception:
-                tn = ""
+                return ""
+            finally:
+                time.sleep(0.1)
+        with ThreadPoolExecutor(FILAS) as ex:
+            achados = list(ex.map(um, faltam))
+        novos = []
+        for sn, tn in zip(faltam, achados):
             if tn:
                 rastreios[sn] = tn
             else:
                 novos.append(sn)
-            time.sleep(0.2)
         faltam = novos
         _upd(tid, etapa=f"Aguardando a Shopee gerar o rastreio ({len(sns) - len(faltam)}/{len(sns)})")
         if faltam:
@@ -198,7 +205,7 @@ def _gerar_arquivo(client, tid, lote, sns, falhas, rastreios=None):
     return qtd
 
 
-def _rodar(tid, rotulos, limite):
+def _rodar(tid, rotulos, limite, snap_tela=None):
     with _lock:
         falhas = []
         organizados = []
@@ -206,8 +213,9 @@ def _rodar(tid, rotulos, limite):
             client = _get_client[0]()
             if client is None:
                 raise RuntimeError("Loja ainda não autorizada na Shopee.")
-            _upd(tid, etapa="Conferindo os lotes na Shopee")
-            snap = lotes.calcular(client)          # lista fresca, não a da tela
+            _upd(tid, etapa="Conferindo os pedidos na Shopee")
+            # Usa os pedidos que estavam na tela no clique (o que a pessoa viu é o que imprime).
+            snap = snap_tela if (snap_tela and snap_tela.get("pedidos")) else lotes.calcular(client)
             pedidos = snap.get("pedidos") or {}
             plano = []                             # [(lote, [sns])] na ordem dos lotes marcados
             restante = limite or 10 ** 9
@@ -233,23 +241,40 @@ def _rodar(tid, rotulos, limite):
             # Confere de novo o status logo antes de organizar (nunca organiza duas vezes).
             status = _status(client, [sn for _, s in plano for sn in s])
             for lote, sns in plano:
-                feitos = []
-                for n, sn in enumerate(sns, 1):
-                    _upd(tid, etapa=f"Organizando envio — {lote} ({n}/{len(sns)})",
-                         organizados=organizados, falhas=falhas)
+                aptos = []
+                for sn in sns:
                     if status.get(sn) == "SEM_NF":
                         falhas.append([sn, "aguardando nota fiscal — não organizado"])
-                        continue
-                    if status.get(sn) != "READY_TO_SHIP":
+                    elif status.get(sn) != "READY_TO_SHIP":
                         falhas.append([sn, f"não está mais 'A enviar' ({status.get(sn) or 'sem status'})"])
-                        continue
+                    else:
+                        aptos.append(sn)
+                trava = threading.Lock()
+                cont = [0]
+
+                def org(sn):
                     try:
                         _organizar(client, sn)
+                        erro = None
+                    except Exception as e:
+                        erro = str(e)
+                    time.sleep(PAUSA)
+                    with trava:
+                        cont[0] += 1
+                        if cont[0] % 3 == 0 or cont[0] == len(aptos):
+                            _upd(tid, etapa=f"Organizando envio — {lote} ({cont[0]}/{len(aptos)})")
+                    return erro
+
+                with ThreadPoolExecutor(FILAS) as ex:
+                    erros = list(ex.map(org, aptos))
+                feitos = []
+                for sn, erro in zip(aptos, erros):     # mantém a ordem do lote (mesmo produto junto)
+                    if erro:
+                        falhas.append([sn, f"organizar envio: {erro}"])
+                    else:
                         organizados.append(sn)
                         feitos.append(sn)
-                    except Exception as e:
-                        falhas.append([sn, f"organizar envio: {e}"])
-                    time.sleep(PAUSA)
+                _upd(tid, organizados=organizados, falhas=falhas)
                 if not feitos:
                     continue
                 sem_rastreio, rastreios = _esperar_rastreios(client, feitos, tid)
@@ -378,7 +403,7 @@ def organizar():
             "VALUES ('rodando', ?, ?, 'Começando', ?, ?, ?)",
             (json.dumps(rotulos, ensure_ascii=False), limite, session.get("employee_name"), _agora(), _agora()),
         ).lastrowid
-    threading.Thread(target=_rodar, args=(tid, rotulos, limite), daemon=True).start()
+    threading.Thread(target=_rodar, args=(tid, rotulos, limite, lotes._ler()), daemon=True).start()
     flash("Organizando o envio. A página atualiza sozinha; os arquivos aparecem embaixo quando ficarem prontos.")
     return redirect(url_for("lotes.painel"))
 
