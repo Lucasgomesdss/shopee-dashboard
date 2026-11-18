@@ -311,7 +311,7 @@ TEMPLATE = """
 {% if t %}
 <div class="v2-flash" style="{% if t.status == 'erro' %}border-color:#e05252{% endif %}">
   <b>{% if t.status == 'rodando' %}Organizando envio…{% elif t.status == 'concluido' %}Último envio organizado{% else %}O último envio parou{% endif %}</b>
-  — {{ t.etapa }} · {{ t.n_org }} de {{ t.total }} pedido(s) organizados{% if t.iniciado_por %} · por {{ t.iniciado_por }}{% endif %}
+  {% if t.quando %}({{ t.quando }}){% endif %} — {{ t.etapa }} · {{ t.n_org }} de {{ t.total }} pedido(s) organizados{% if t.iniciado_por %} · por {{ t.iniciado_por }}{% endif %}
   {% if t.falhas_l %}<details style="margin-top:6px"><summary>{{ t.falhas_l|length }} pedido(s) com problema</summary>
     <ul style="margin:6px 0 0 18px">{% for f in t.falhas_l[:60] %}<li><span style="font-family:monospace">{{ f[0] }}</span> — {{ f[1] }}</li>{% endfor %}</ul></details>{% endif %}
   {% if t.status == 'erro' and t.n_org and envio.pode %}<form method="post" action="{{ url_for('lotes_envio.refazer', tid=t.id) }}" style="margin-top:8px"><button class="v2-btn sec" type="submit">Gerar arquivo dos já organizados</button></form>{% endif %}

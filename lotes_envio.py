@@ -333,6 +333,15 @@ def resumo_tela():
     if t:
         t["n_org"] = len(json.loads(t["organizados"] or "[]"))
         t["falhas_l"] = json.loads(t["falhas"] or "[]")
+        try:
+            quando = datetime.fromisoformat(t["fim_em"] or t["criado_em"]).replace(tzinfo=timezone.utc).astimezone(BRT)
+            t["quando"] = quando.strftime("%d/%m %H:%M")
+        except (TypeError, ValueError):
+            quando, t["quando"] = None, ""
+        # O quadro do topo só mostra o envio de hoje (ou o que ainda está rodando);
+        # envios de dias anteriores ficam só no histórico de arquivos.
+        if not ativo and (quando is None or quando.date() != datetime.now(BRT).date()):
+            t = None
     for a in arquivos:
         try:
             a["quando"] = datetime.fromisoformat(a["criado_em"]).replace(tzinfo=timezone.utc).astimezone(BRT).strftime("%d/%m %H:%M")
