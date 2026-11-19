@@ -266,6 +266,39 @@ def _loop():
 
 _rodando = [False]
 
+
+def remover_pedidos(sns):
+    """Tira da lista da tela os pedidos que já foram organizados, sem consultar a Shopee."""
+    sns = set(sns or [])
+    if not sns:
+        return
+    with _lock:
+        snap = _ler()
+        pedidos = snap.get("pedidos") or {}
+        if not pedidos:
+            return
+        tirados = set()
+        for k in list(pedidos):
+            antes = pedidos[k]
+            pedidos[k] = [sn for sn in antes if sn not in sns]
+            tirados |= set(antes) - set(pedidos[k])
+        novos = []
+        for l in snap.get("lotes") or []:
+            n = len(pedidos.get(l["label"]) or [])
+            if n:
+                if n != l["count"]:
+                    l = dict(l, count=n, nota="")
+                novos.append(l)
+        novos.sort(key=lambda x: -x["count"])
+        snap["lotes"] = novos
+        snap["pedidos"] = {k: v for k, v in pedidos.items() if v}
+        snap["soma_lotes"] = sum(x["count"] for x in novos)
+        n = len(tirados)
+        if "em_aberto" in snap:
+            snap["em_aberto"] = max(0, (snap.get("em_aberto") or 0) - n)
+            snap["processados"] = (snap.get("processados") or 0) + n
+        _salvar(snap)
+
 LABEL_TODOS = "TODOS OS LOTES"
 
 
@@ -397,12 +430,18 @@ TEMPLATE = """
 {% endif %}
 </div>
 {% if envio.arquivos %}
+<style>
+.lt-arq.lt-novo{background:#fff4c2;border:2px solid #f5c518}
+.lt-tag{display:inline-block;background:#f5c518;color:#1f2430;font-size:11px;font-weight:800;padding:2px 7px;border-radius:6px;margin-right:4px;vertical-align:1px}
+.lt-ok{color:#1e7d4a}
+</style>
+<script>document.addEventListener("click",function(e){var a=e.target.closest&&e.target.closest(".lt-baixar");if(!a)return;var r=a.closest(".lt-arq");if(r){r.classList.remove("lt-novo");var t=r.querySelector(".lt-tag");if(t)t.remove();}});</script>
 <div class="v2-sec"><h2>Arquivos gerados</h2><span class="v2-sub">últimos 30 dias · {{ envio.arquivos|length }} arquivo(s) · inclui as reimpressões da tela A separar</span></div>
 <div class="v2-list">
   {% for a in envio.arquivos %}
-  <div class="v2-lote" style="cursor:default"><span class="v2-lt"><b>{{ a.lote }}</b><small>{{ a.quando }}{% if a.quem %} · por {{ a.quem }}{% endif %} · {{ a.nome }}{% if a.falhas %} · {{ a.falhas }} sem etiqueta{% endif %}</small></span>
+  <div class="v2-lote lt-arq{% if not a.baixado_em %} lt-novo{% endif %}" style="cursor:default"><span class="v2-lt"><b>{% if not a.baixado_em %}<span class="lt-tag">NÃO BAIXADO</span> {% endif %}{{ a.lote }}</b><small>{{ a.quando }}{% if a.quem %} · por {{ a.quem }}{% endif %} · {{ a.nome }}{% if a.falhas %} · {{ a.falhas }} sem etiqueta{% endif %}{% if a.baixado_em and a.baixado_quando %} · <span class="lt-ok">baixado {{ a.baixado_quando }}{% if a.baixado_por %} por {{ a.baixado_por }}{% endif %}</span>{% endif %}</small></span>
     <span class="v2-cnt">{{ a.qtd }}</span>
-    <a class="v2-btn sec" href="{{ a.url }}">{{ ic.baixar|safe }}Baixar .txt</a></div>
+    <a class="v2-btn sec lt-baixar" href="{{ a.url }}">{{ ic.baixar|safe }}Baixar .txt</a></div>
   {% endfor %}
 </div>
 {% endif %}

@@ -286,6 +286,29 @@ def init_db():
             )
             """
         )
+        marcar_baixado_colunas(conn, "reimpressao_trabalhos")
+
+
+def marcar_baixado_colunas(conn, tabela):
+    """Colunas de 'já baixado' (quem e quando). Arquivos que já existiam contam como baixados."""
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tabela})")}
+    if "baixado_em" not in cols:
+        conn.execute(f"ALTER TABLE {tabela} ADD COLUMN baixado_em TEXT")
+        conn.execute(f"ALTER TABLE {tabela} ADD COLUMN baixado_por TEXT")
+        conn.execute(f"UPDATE {tabela} SET baixado_em = criado_em")
+
+
+def marcar_baixado(tabela, rid):
+    """Primeiro download do arquivo: guarda quem baixou e quando (a linha deixa de ficar amarela)."""
+    from flask import session
+    try:
+        with models.get_conn() as conn:
+            conn.execute(
+                f"UPDATE {tabela} SET baixado_em = ?, baixado_por = ? WHERE id = ? AND baixado_em IS NULL",
+                (_agora(), session.get("employee_name"), rid),
+            )
+    except Exception:
+        pass
 
 
 def _agora():
@@ -450,6 +473,7 @@ def arquivo(tid):
     if not row or not row["conteudo"]:
         flash("O arquivo desta reimpressão não está disponível.")
         return redirect(url_for("reimpressao.acompanhar", tid=tid))
+    marcar_baixado("reimpressao_trabalhos", tid)
     return Response(
         row["conteudo"],
         mimetype="text/plain; charset=utf-8",
