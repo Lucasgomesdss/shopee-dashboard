@@ -32,7 +32,8 @@ bp = Blueprint("lotes_envio", __name__)
 
 BRT = timezone(timedelta(hours=-3))
 PAUSA = 0.2                 # entre chamadas de organizar envio (em cada fila)
-FILAS = 4                   # pedidos organizados ao mesmo tempo
+FILAS = 6                   # chamadas à Shopee ao mesmo tempo (pedido a pedido)
+LOTE_MASSA = 50             # pedidos por "organizar em massa" (limite da Shopee)
 ESPERA_RASTREIO = 120       # segundos esperando a Shopee gerar o rastreio
 BATIMENTO_MORTO = 180       # trabalho sem sinal de vida há mais que isso = processo caiu
 _get_client = [None]
@@ -144,14 +145,77 @@ def _organizar(client, order_sn):
         raise RuntimeError(r.get("message") or r.get("error"))
 
 
-def _status(client, sns):
-    """order_sn -> status atual na Shopee ('SEM_NF' se a nota fiscal ainda não chegou)."""
+def _status(client, sns, canais=None):
+    """order_sn -> status atual na Shopee ('SEM_NF' se a nota fiscal ainda não chegou).
+    Se 'canais' for um dict, preenche também o canal de envio de cada pedido."""
     out = {}
     for i in range(0, len(sns), 50):
         for od in lotes.detalhes(client, sns[i:i + 50]):
             st = od.get("order_status")
             out[od["order_sn"]] = "SEM_NF" if st == "READY_TO_SHIP" and not lotes.tem_nota(od) else st
+            if canais is not None:
+                pkg = (od.get("package_list") or [{}])[0] or {}
+                canais[od["order_sn"]] = pkg.get("logistics_channel_id") or od.get("shipping_carrier") or ""
     return out
+
+
+def _organizar_em_massa(client, sns, canais, avisar=None):
+    """Organiza o envio de vários pedidos de uma vez (o 'Envio em massa' do Seller Center):
+    até 50 por chamada, separados por canal de envio. Depois confere na Shopee quem ficou
+    organizado; o que não ficou é organizado pedido a pedido. Devolve {order_sn: erro ou None}."""
+    grupos = {}
+    for sn in sns:
+        grupos.setdefault(canais.get(sn, ""), []).append(sn)
+    blocos = [g[i:i + LOTE_MASSA] for g in grupos.values() for i in range(0, len(g), LOTE_MASSA)]
+    msg_massa = {}
+
+    def massa(bloco):
+        try:
+            end_id, horario = _endereco_e_horario(client, bloco[0])
+            r = client._shop_request(
+                "POST", "/api/v2/logistics/batch_ship_order",
+                json_body={"order_list": [{"order_sn": sn} for sn in bloco],
+                           "pickup": {"address_id": end_id, "pickup_time_id": horario}},
+            )
+            if r.get("error"):
+                for sn in bloco:
+                    msg_massa[sn] = r.get("message") or r.get("error")
+            for it in ((r.get("response") or {}).get("result_list") or []):
+                if it.get("fail_error") or it.get("fail_message"):
+                    msg_massa[it.get("order_sn")] = it.get("fail_message") or it.get("fail_error")
+        except Exception as e:
+            for sn in bloco:
+                msg_massa[sn] = str(e)
+
+    with ThreadPoolExecutor(3) as ex:
+        list(ex.map(massa, blocos))
+    if avisar:
+        avisar("Conferindo os pedidos organizados")
+    # Confere de verdade na Shopee (não confia só na resposta da chamada em massa).
+    depois = _status(client, list(sns))
+    resultado = {sn: None for sn in sns if depois.get(sn) not in ("READY_TO_SHIP", "SEM_NF")}
+    resto = [sn for sn in sns if sn not in resultado]
+    if resto and avisar:
+        avisar(f"Organizando um a um os que a Shopee não aceitou em massa ({len(resto)})")
+
+    def um(sn):
+        try:
+            _organizar(client, sn)
+            return None
+        except Exception as e:
+            try:      # pode ter ficado organizado mesmo com erro na resposta
+                if _status(client, [sn]).get(sn) not in ("READY_TO_SHIP", "SEM_NF"):
+                    return None
+            except Exception:
+                pass
+            return str(e)
+        finally:
+            time.sleep(PAUSA)
+
+    with ThreadPoolExecutor(FILAS) as ex:
+        for sn, erro in zip(resto, ex.map(um, resto)):
+            resultado[sn] = erro
+    return resultado
 
 
 def _esperar_rastreios(client, sns, tid):
@@ -240,7 +304,8 @@ def _rodar(tid, rotulos, limite, snap_tela=None):
                     "Clique em Atualizar agora e escolha de novo." % ", ".join(rotulos))
 
             # Confere de novo o status logo antes de organizar (nunca organiza duas vezes).
-            status = _status(client, [sn for _, s in plano for sn in s])
+            canais = {}
+            status = _status(client, [sn for _, s in plano for sn in s], canais)
             for lote, sns in plano:
                 aptos = []
                 for sn in sns:
@@ -250,26 +315,12 @@ def _rodar(tid, rotulos, limite, snap_tela=None):
                         falhas.append([sn, f"não está mais 'A enviar' ({status.get(sn) or 'sem status'})"])
                     else:
                         aptos.append(sn)
-                trava = threading.Lock()
-                cont = [0]
-
-                def org(sn):
-                    try:
-                        _organizar(client, sn)
-                        erro = None
-                    except Exception as e:
-                        erro = str(e)
-                    time.sleep(PAUSA)
-                    with trava:
-                        cont[0] += 1
-                        if cont[0] % 3 == 0 or cont[0] == len(aptos):
-                            _upd(tid, etapa=f"Organizando envio — {lote} ({cont[0]}/{len(aptos)})")
-                    return erro
-
-                with ThreadPoolExecutor(FILAS) as ex:
-                    erros = list(ex.map(org, aptos))
+                _upd(tid, etapa=f"Organizando envio em massa — {lote} ({len(aptos)} pedido(s))")
+                res = _organizar_em_massa(client, aptos, canais,
+                                          avisar=lambda t: _upd(tid, etapa=f"{t} — {lote}"))
                 feitos = []
-                for sn, erro in zip(aptos, erros):     # mantém a ordem do lote (mesmo produto junto)
+                for sn in aptos:                       # mantém a ordem do lote (mesmo produto junto)
+                    erro = res.get(sn)
                     if erro:
                         falhas.append([sn, f"organizar envio: {erro}"])
                     else:
